@@ -1,33 +1,19 @@
 #pragma once
+#include "common.h"
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
-static inline size_t next_pow2(size_t n) {
-  if (n <= 1) {
-    return 1;
-  }
-
-  n--;
-  n |= n >> 1;
-  n |= n >> 2;
-  n |= n >> 4;
-  n |= n >> 8;
-  n |= n >> 16;
-  n |= n >> 32;
-  return n + 1;
-}
-
 #define VECTOR_TYPE(T, name)                                                   \
   typedef struct name {                                                        \
-    T * data;                                                                \
+    T *data;                                                                   \
     size_t capacity;                                                           \
     size_t count;                                                              \
   } name;
 
 #define VECTOR_METHODS(T, name)                                                \
   static inline bool name##_init(name *v, size_t capacity) {                   \
-    v->capacity = capacity > 0 ? next_pow2(capacity) : 128;                               \
+    v->capacity = capacity > 0 ? next_pow2(capacity) : 128;                    \
     v->count = 0;                                                              \
     v->data = (T *)malloc(v->capacity * sizeof(T));                            \
     return v->data != nullptr;                                                 \
