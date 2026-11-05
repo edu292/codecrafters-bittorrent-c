@@ -1,6 +1,7 @@
 #include "bencode.h"
 #include "vector.h"
 #include <ctype.h>
+#include <inttypes.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,13 +25,16 @@ const char *parse_bencode(const char *encoded, Bencode *out) {
     return nullptr;
   }
 
+  const char *start = encoded;
+  const char *next = nullptr;
+
   if (isdigit(*encoded)) {
     const char *colon = strchr(encoded, ':');
     if (colon == nullptr) {
       return nullptr;
     }
 
-    int len = atoi(encoded);
+    size_t len = strtoumax(encoded, nullptr, 10);
     const char *data = colon + 1;
 
     char *str = malloc(len + 1);
@@ -39,88 +43,97 @@ const char *parse_bencode(const char *encoded, Bencode *out) {
 
     out->type = BENCODE_STRING;
     out->value.string = str;
-    return data + len;
-  }
+    next = data + len;
+  } else {
 
-  switch (encoded[0]) {
-  case 'i':
-    const char *end = strchr(encoded + 1, 'e');
-    if (end == nullptr) {
-      return nullptr;
-    }
-
-    out->type = BENCODE_INTEGER;
-    out->value.integer = atoll(encoded + 1);
-    return end + 1;
-  case 'l':
-    encoded++;
-    out->type = BENCODE_LIST;
-    out->value.list = malloc(sizeof(BencodeList));
-    if (out->value.list == nullptr) {
-      return nullptr;
-    }
-
-    if (!BencodeList_init(out->value.list, 16)) {
-      free(out->value.list);
-      return nullptr;
-    }
-
-    while (*encoded != 'e') {
-      Bencode elem;
-      encoded = parse_bencode(encoded, &elem);
-      if (encoded == nullptr) {
-        goto fail;
-      }
-
-      if (!BencodeList_push(out->value.list, elem)) {
+    switch (encoded[0]) {
+    case 'i':
+      const char *end = strchr(encoded + 1, 'e');
+      if (end == nullptr) {
         return nullptr;
-        goto fail;
       }
-    }
-    return encoded + 1;
-  case 'd':
-    encoded++;
-    out->type = BENCODE_DICT;
-    out->value.dict = malloc(sizeof(BencodeDict));
-    if (out->value.dict == nullptr) {
+
+      out->type = BENCODE_INTEGER;
+      out->value.integer = strtoimax(encoded + 1, nullptr, 10);
+      next = end + 1;
+      break;
+
+    case 'l':
+      encoded++;
+      out->type = BENCODE_LIST;
+      out->value.list = malloc(sizeof(BencodeList));
+      if (out->value.list == nullptr) {
+        return nullptr;
+      }
+
+      if (!BencodeList_init(out->value.list, 16)) {
+        free(out->value.list);
+        return nullptr;
+      }
+
+      while (*encoded != 'e') {
+        Bencode elem;
+        encoded = parse_bencode(encoded, &elem);
+        if (encoded == nullptr) {
+          goto fail;
+        }
+
+        if (!BencodeList_push(out->value.list, elem)) {
+          goto fail;
+        }
+      }
+      next = encoded + 1;
+      break;
+
+    case 'd':
+      encoded++;
+      out->type = BENCODE_DICT;
+      out->value.dict = malloc(sizeof(BencodeDict));
+      if (out->value.dict == nullptr) {
+        return nullptr;
+      }
+
+      if (!BencodeDict_init(out->value.dict, 0)) {
+        free(out->value.dict);
+        return nullptr;
+      }
+
+      while (*encoded != 'e') {
+        Bencode key;
+        Bencode value;
+        encoded = parse_bencode(encoded, &key);
+        if (encoded == nullptr) {
+          goto fail;
+        }
+
+        if (key.type != BENCODE_STRING) {
+          bencode_destroy(&key);
+          goto fail;
+        }
+
+        encoded = parse_bencode(encoded, &value);
+        if (encoded == nullptr) {
+          bencode_destroy(&key);
+          goto fail;
+        }
+
+        if (!BencodeDict_set(out->value.dict, key.value.string, value)) {
+          bencode_destroy(&key);
+          bencode_destroy(&value);
+          goto fail;
+        }
+      }
+
+      next = encoded + 1;
+      break;
+    default:
       return nullptr;
     }
-
-    if (!BencodeDict_init(out->value.dict, 0)) {
-      free(out->value.dict);
-      return nullptr;
-    }
-
-    while (*encoded != 'e') {
-      Bencode key;
-      Bencode value;
-      encoded = parse_bencode(encoded, &key);
-      if (encoded == nullptr) {
-        goto fail;
-      }
-
-      if (key.type != BENCODE_STRING) {
-        bencode_destroy(&key);
-        goto fail;
-      }
-
-      encoded = parse_bencode(encoded, &value);
-      if (encoded == nullptr) {
-        bencode_destroy(&key);
-        goto fail;
-      }
-
-      if (!BencodeDict_set(out->value.dict, key.value.string, value)) {
-        bencode_destroy(&key);
-        bencode_destroy(&value);
-        goto fail;
-      }
-    }
-
-    return encoded + 1;
-  default:
-    return nullptr;
   }
+
+  out->raw = start;
+  out->raw_len = (size_t)(next - start);
+  return next;
 
 fail:
   bencode_destroy(out);

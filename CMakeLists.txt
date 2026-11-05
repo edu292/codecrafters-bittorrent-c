@@ -4,7 +4,7 @@ project(codecrafters-bittorrent)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-file(GLOB_RECURSE SOURCE_FILES src/*.c src/*.h)
+file(GLOB_RECURSE SOURCE_FILES src/*.c)
 
 set(CMAKE_C_STANDARD 23) # Enable the C23 standard
 

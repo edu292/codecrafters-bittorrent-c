@@ -1,5 +1,7 @@
+#pragma once
 #include "hashmap.h"
 #include "vector.h"
+#include <stddef.h>
 #include <stdint.h>
 
 typedef struct BencodeDict BencodeDict;
@@ -14,6 +16,8 @@ typedef enum : uint8_t {
 
 typedef struct Bencode {
   BencodeType type;
+  const char *raw;
+  size_t raw_len;
   union {
     char *string;
     int64_t integer;
