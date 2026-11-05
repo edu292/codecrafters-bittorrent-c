@@ -1,29 +1,66 @@
 #include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+typedef enum : uint8_t {
+  BENCODE_STRING,
+  BENCODE_INTEGER,
+  BENCODE_LIST,
+  BENCODE_DICT,
+} BencodeType;
+
+typedef union BencodeValue {
+  char *string;
+  int64_t integer;
+  union BencodeValue *list;
+} BencodeValue;
+
+typedef struct {
+  BencodeType type;
+  BencodeValue value;
+} Bencode;
+
 bool is_digit(char c) { return c >= '0' && c <= '9'; }
 
-char *decode_bencode(const char *bencoded_value) {
-  if (!is_digit(bencoded_value[0])) {
-    fprintf(stderr, "Only strings are supported at the moment\n");
-    exit(1);
+Bencode decode_bencode(const char *bencoded_value) {
+  if (is_digit(bencoded_value[0])) {
+    int length = atoi(bencoded_value);
+    const char *colon_index = strchr(bencoded_value, ':');
+    if (colon_index == nullptr) {
+      fprintf(stderr, "Invalid encoded value: %s\n", bencoded_value);
+      exit(1);
+    }
+
+    const char *start = colon_index + 1;
+    char *decoded_str = malloc(length + 1);
+    strncpy(decoded_str, start, length);
+    decoded_str[length] = '\0';
+    return (Bencode){.type = BENCODE_STRING, .value.string = decoded_str};
   }
 
-  int length = atoi(bencoded_value);
-  const char *colon_index = strchr(bencoded_value, ':');
-  if (colon_index == nullptr) {
-    fprintf(stderr, "Invalid encoded value: %s\n", bencoded_value);
+  switch (bencoded_value[0]) {
+  case 'i':
+    const char *end_index = strchr(bencoded_value, 'e');
+    if (end_index == nullptr) {
+      fprintf(stderr, "Invalid encoded value: %s\n", bencoded_value);
+      exit(1);
+    }
+
+    return (Bencode){.type = BENCODE_INTEGER,
+                     .value.integer = atoll(bencoded_value + 1)};
+  case 'l':
+    fprintf(stderr, "Not implemented\n");
+    exit(1);
+  case 'd':
+    fprintf(stderr, "Not implemented\n");
+    exit(1);
+  default:
+    fprintf(stderr, "Invalid\n");
     exit(1);
   }
-
-  const char *start = colon_index + 1;
-
-  char *decoded_str = malloc(length + 1);
-  strncpy(decoded_str, start, length);
-  decoded_str[length] = '\0';
-  return decoded_str;
 }
 
 int main(int argc, char *argv[]) {
@@ -41,9 +78,16 @@ int main(int argc, char *argv[]) {
     fprintf(stderr, "Logs from your program will appear here!\n");
 
     const char *encoded_str = argv[2];
-    char *decoded_str = decode_bencode(encoded_str);
-    printf("\"%s\"\n", decoded_str);
-    free(decoded_str);
+    Bencode bencode = decode_bencode(encoded_str);
+    switch (bencode.type) {
+    case BENCODE_STRING:
+      printf("\"%s\"\n", bencode.value.string);
+      free(bencode.value.string);
+      break;
+    case BENCODE_INTEGER:
+      printf("%ld\n", bencode.value.integer);
+      break;
+    }
   } else {
     fprintf(stderr, "Unknown command: %s\n", command);
     return 1;
