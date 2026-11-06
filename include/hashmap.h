@@ -40,6 +40,33 @@ typedef enum : uint8_t {
     m->tombstones = 0;                                                         \
   }                                                                            \
                                                                                \
+  static inline bool name##_find_index(const name *m, K key, size_t *out) {    \
+    if (m->count == 0) {                                                       \
+      return false;                                                            \
+    }                                                                          \
+                                                                               \
+    size_t mask = m->capacity - 1;                                             \
+    size_t idx = hash_fn(key) & mask;                                          \
+    while (m->entries[idx].status != SLOT_EMPTY) {                             \
+      if (m->entries[idx].status == SLOT_OCCUPIED &&                           \
+          eq_fn(m->entries[idx].key, key)) {                                   \
+        if (out != nullptr) {                                                  \
+          *out = idx;                                                          \
+        }                                                                      \
+                                                                               \
+        return true;                                                           \
+      }                                                                        \
+                                                                               \
+      idx = (idx + 1) & mask;                                                  \
+    }                                                                          \
+                                                                               \
+    return false;                                                              \
+  }                                                                            \
+                                                                               \
+  static inline bool name##_contains(const name *m, K key) {                   \
+    return name##_find_index(m, key, nullptr);                                 \
+  }                                                                            \
+                                                                               \
   static inline bool name##_resize(name *m) {                                  \
     size_t new_cap =                                                           \
         m->count * 2 > m->capacity ? m->capacity * 2 : m->capacity;            \
@@ -69,7 +96,6 @@ typedef enum : uint8_t {
     free(old_entries);                                                         \
     m->entries = new_entries;                                                  \
     m->capacity = new_cap;                                                     \
-    m->count = 0;                                                              \
     m->tombstones = 0;                                                         \
     return true;                                                               \
   }                                                                            \
@@ -109,47 +135,22 @@ typedef enum : uint8_t {
   }                                                                            \
                                                                                \
   static inline bool name##_get(const name *m, K key, V *out) {                \
-    if (m->count == 0) {                                                       \
-      return false;                                                            \
-    }                                                                          \
-                                                                               \
-    size_t mask = m->capacity - 1;                                             \
-    size_t idx = hash_fn(key) & mask;                                          \
-                                                                               \
-    while (m->entries[idx].status != SLOT_EMPTY) {                             \
-      if (m->entries[idx].status == SLOT_OCCUPIED &&                           \
-          eq_fn(m->entries[idx].key, key)) {                                   \
-        *out = m->entries[idx].value;                                          \
-        return true;                                                           \
-      }                                                                        \
-                                                                               \
-      idx = (idx + 1) & mask;                                                  \
+    size_t idx;                                                                \
+    if (name##_find_index(m, key, &idx)) {                                     \
+      *out = m->entries[idx].value;                                            \
+      return true;                                                             \
     }                                                                          \
                                                                                \
     return false;                                                              \
   }                                                                            \
                                                                                \
-  static inline bool name##_remove(name *m, K key) {                           \
-    if (m->count == 0) {                                                       \
-      return false;                                                            \
+  static inline V *name##_get_ptr(name *m, K key) {                            \
+    size_t idx;                                                                \
+    if (name##_find_index(m, key, &idx)) {                                     \
+      return &m->entries[idx].value;                                           \
     }                                                                          \
                                                                                \
-    size_t mask = m->capacity - 1;                                             \
-    size_t idx = hash_fn(key) & mask;                                          \
-                                                                               \
-    while (m->entries[idx].status != SLOT_EMPTY) {                             \
-      if (m->entries[idx].status == SLOT_OCCUPIED &&                           \
-          eq_fn(m->entries[idx].key, key)) {                                   \
-        m->entries[idx].status = SLOT_DELETED;                                 \
-        m->count--;                                                            \
-        m->tombstones++;                                                       \
-        return true;                                                           \
-      }                                                                        \
-                                                                               \
-      idx = (idx + 1) & mask;                                                  \
-    }                                                                          \
-                                                                               \
-    return false;                                                              \
+    return nullptr;                                                            \
   }                                                                            \
                                                                                \
   static inline const name##_entry **name##_get_entries(const name *m) {       \
@@ -171,6 +172,18 @@ typedef enum : uint8_t {
     }                                                                          \
                                                                                \
     return out;                                                                \
+  }                                                                            \
+                                                                               \
+  static inline bool name##_remove(name *m, K key) {                           \
+    size_t idx;                                                                \
+    if (name##_find_index(m, key, &idx)) {                                     \
+      m->entries[idx].status = SLOT_DELETED;                                   \
+      m->count--;                                                              \
+      m->tombstones++;                                                         \
+      return true;                                                             \
+    }                                                                          \
+                                                                               \
+    return false;                                                              \
   }
 
 #define DEFINE_HASHMAP(K, V, name, hash_fn, eq_fn)                             \

@@ -15,7 +15,7 @@
   static inline bool name##_init(name *v, size_t capacity) {                   \
     v->capacity = capacity > 0 ? next_pow2(capacity) : 128;                    \
     v->count = 0;                                                              \
-    v->data = (T *)malloc(v->capacity * sizeof(T));                            \
+    v->data = malloc(v->capacity * sizeof(T));                                 \
     return v->data != nullptr;                                                 \
   }                                                                            \
                                                                                \
@@ -38,7 +38,7 @@
   static inline bool name##_push(name *v, T value) {                           \
     if (v->count == v->capacity) {                                             \
       size_t new_cap = v->capacity * 2;                                        \
-      T *new_data = (T *)realloc(v->data, new_cap * sizeof(T));                \
+      T *new_data = realloc(v->data, new_cap * sizeof(T));                     \
       if (new_data == nullptr) {                                               \
         return false;                                                          \
       }                                                                        \
@@ -82,9 +82,9 @@
     return true;                                                               \
   }                                                                            \
                                                                                \
-  static inline bool name##_extend(name *v, const T *items, size_t n) {        \
+  static inline T *name##_grow(name *v, size_t n) {                            \
     if (n == 0) {                                                              \
-      return true;                                                             \
+      return &v->data[v->count];                                               \
     }                                                                          \
                                                                                \
     size_t needed = v->count + n;                                              \
@@ -92,15 +92,29 @@
       size_t new_cap = next_pow2(needed);                                      \
       T *new_data = realloc(v->data, new_cap * sizeof(T));                     \
       if (new_data == nullptr) {                                               \
-        return false;                                                          \
+        return nullptr;                                                        \
       }                                                                        \
                                                                                \
       v->data = new_data;                                                      \
       v->capacity = new_cap;                                                   \
     }                                                                          \
                                                                                \
-    memcpy(&v->data[v->count], items, n * sizeof(T));                          \
+    T *dest = &v->data[v->count];                                              \
     v->count += n;                                                             \
+    return dest;                                                               \
+  }                                                                            \
+                                                                               \
+  static inline bool name##_extend(name *v, const T *items, size_t n) {        \
+    if (n == 0) {                                                              \
+      return true;                                                             \
+    }                                                                          \
+                                                                               \
+    T *dest = name##_grow(v, n);                                               \
+    if (dest == nullptr) {                                                     \
+      return false;                                                            \
+    }                                                                          \
+                                                                               \
+    memcpy(dest, items, n * sizeof(T));                                        \
     return true;                                                               \
   }
 

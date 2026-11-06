@@ -4,13 +4,17 @@ project(codecrafters-bittorrent)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-file(GLOB_RECURSE SOURCE_FILES src/*.c)
+file(GLOB_RECURSE SOURCE_FILES CONFIGURE_DEPENDS src/*.c)
 
 set(CMAKE_C_STANDARD 23) # Enable the C23 standard
 
 find_package(OpenSSL REQUIRED)
+find_package(CURL REQUIRED)
 
 add_executable(bittorrent ${SOURCE_FILES})
 
 target_include_directories(bittorrent PRIVATE include)
-target_link_libraries(bittorrent PRIVATE OpenSSL::Crypto)
+target_link_libraries(bittorrent PRIVATE
+    OpenSSL::Crypto
+    CURL::libcurl
+)

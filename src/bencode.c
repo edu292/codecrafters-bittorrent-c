@@ -30,7 +30,7 @@ static inline bool CharVector_extend_quoted(CharVector *v, BencodeString s) {
 }
 
 const char *parse_bencode(const char *encoded, Bencode *out) {
-  if (encoded == nullptr || *encoded == '\0') {
+  if (*encoded == '\0') {
     return nullptr;
   }
 
@@ -47,14 +47,10 @@ const char *parse_bencode(const char *encoded, Bencode *out) {
     const char *data = colon + 1;
 
     out->type = BENCODE_STRING;
-    out->value.string = (BencodeString){
-        .data = data,
-        .length = len,
-    };
-
+    out->value.string.data = data;
+    out->value.string.length = len;
     next = data + len;
   } else {
-
     switch (encoded[0]) {
     case 'i':
       const char *end = strchr(encoded + 1, 'e');
@@ -83,11 +79,7 @@ const char *parse_bencode(const char *encoded, Bencode *out) {
       while (*encoded != 'e') {
         Bencode elem;
         encoded = parse_bencode(encoded, &elem);
-        if (encoded == nullptr) {
-          goto fail;
-        }
-
-        if (!BencodeList_push(out->value.list, elem)) {
+        if (encoded == nullptr || !BencodeList_push(out->value.list, elem)) {
           goto fail;
         }
       }
@@ -111,23 +103,16 @@ const char *parse_bencode(const char *encoded, Bencode *out) {
         Bencode key;
         Bencode value;
         encoded = parse_bencode(encoded, &key);
-        if (encoded == nullptr) {
-          goto fail;
-        }
-
-        if (key.type != BENCODE_STRING) {
-          bencode_destroy(&key);
+        if (encoded == nullptr || key.type != BENCODE_STRING) {
           goto fail;
         }
 
         encoded = parse_bencode(encoded, &value);
         if (encoded == nullptr) {
-          bencode_destroy(&key);
           goto fail;
         }
 
         if (!BencodeDict_set(out->value.dict, key.value.string, value)) {
-          bencode_destroy(&key);
           bencode_destroy(&value);
           goto fail;
         }
@@ -204,10 +189,8 @@ static bool bencode_to_vec(const Bencode *b, CharVector *v) {
         return false;
       }
 
-      if (i != b->value.dict->count - 1) {
-        if (!CharVector_push(v, ',')) {
-          return false;
-        }
+      if (i != b->value.dict->count - 1 && !CharVector_push(v, ',')) {
+        return false;
       }
     }
 
@@ -250,6 +233,7 @@ void bencode_destroy(Bencode *b) {
 
     BencodeDict_destroy(b->value.dict);
     free(b->value.dict);
+    free(entries);
     break;
   case BENCODE_STRING:
   case BENCODE_INTEGER:

@@ -1,13 +1,17 @@
 #include "bencode.h"
 #include "hex.h"
+#include "peer.h"
 #include "torrent.h"
+#include "tracker.h"
+#include <curl/curl.h>
+#include <curl/easy.h>
+#include <curl/typecheck-gcc.h>
+#include <curl/urlapi.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-static inline bool is_digit(char c) { return c >= '0' && c <= '9'; }
 
 int main(int argc, char *argv[]) {
   setbuf(stdout, nullptr);
@@ -46,6 +50,26 @@ int main(int argc, char *argv[]) {
       print_hex(&torrent.info->pieces[i]);
       printf("\n");
     }
+    torrent_destroy(&torrent);
+  } else if (strcmp(command, "peers") == 0) {
+    Torrent torrent;
+    if (!torrent_from_file(&torrent, argv[2])) {
+      fprintf(stderr, "failed to init torrent\n");
+      return EXIT_FAILURE;
+    }
+
+    PeerVector peers;
+    PeerVector_init(&peers, 16);
+    if (!tracker_get_peers(&torrent, &peers)) {
+      fprintf(stderr, "failed to get trackers\n");
+      return EXIT_FAILURE;
+    }
+
+    for (size_t i = 0; i < peers.count; i++) {
+      Peer *peer = &peers.data[i];
+      printf("%s:%u\n", peer->ip, peer->port);
+    }
+    PeerVector_destroy(&peers);
   } else {
     fprintf(stderr, "Unknown command: %s\n", command);
     return 1;

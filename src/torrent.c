@@ -53,6 +53,8 @@ bool torrent_info_init(TorrentInfo *ti, const BencodeDict *dict) {
   return true;
 }
 
+void torrent_info_destroy(TorrentInfo *ti) { free(ti->pieces); }
+
 bool torrent_from_file(Torrent *t, const char *filepath) {
   int fd = open(filepath, O_RDONLY);
   if (fd < 0) {
@@ -95,8 +97,9 @@ bool torrent_from_file(Torrent *t, const char *filepath) {
     goto cleanup_bencode;
   }
 
-  t->tracker_url = strdup(announce_val.value.string.data);
-  if (!t->tracker_url) {
+  t->tracker_url =
+      strndup(announce_val.value.string.data, announce_val.value.string.length);
+  if (t->tracker_url == nullptr) {
     goto cleanup_bencode;
   }
 
@@ -122,6 +125,7 @@ bool torrent_from_file(Torrent *t, const char *filepath) {
   goto cleanup_bencode;
 
 cleanup_info:
+  torrent_info_destroy(t->info);
   free(t->info);
   t->info = nullptr;
 
@@ -142,6 +146,7 @@ void torrent_destroy(Torrent *t) {
   free(t->tracker_url);
   t->tracker_url = nullptr;
   if (t->info) {
+    torrent_info_destroy(t->info);
     free(t->info);
     t->info = nullptr;
   }
