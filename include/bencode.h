@@ -14,12 +14,20 @@ typedef enum : uint8_t {
   BENCODE_DICT,
 } BencodeType;
 
+typedef struct {
+  const char *data;
+  size_t length;
+} BencodeString;
+
+static inline BencodeString bstr(const char *s) {
+  return (BencodeString){.data = s, .length = strlen(s)};
+}
+
 typedef struct Bencode {
   BencodeType type;
-  const char *raw;
-  size_t raw_len;
+  BencodeString raw;
   union {
-    char *string;
+    BencodeString string;
     int64_t integer;
     BencodeList *list;
     BencodeDict *dict;
@@ -32,17 +40,19 @@ void bencode_destroy(Bencode *b);
 
 DEFINE_VECTOR(Bencode, BencodeList)
 
-static inline size_t hash_str(const char *str) {
+static inline size_t hash_str(BencodeString s) {
   size_t hash = 5381;
-  int c;
-  while ((c = (unsigned char)*str++)) {
-    hash = ((hash << 5) + hash) + c;
+  for (size_t i = 0; i < s.length; i++) {
+    hash = ((hash << 5) + hash) + (unsigned char)s.data[i];
   }
   return hash;
 }
 
-static inline bool eq_str(const char *a, const char *b) {
-  return strcmp(a, b) == 0;
+static inline bool eq_str(BencodeString a, BencodeString b) {
+  if (a.length != b.length) {
+    return false;
+  }
+  return memcmp(a.data, b.data, a.length) == 0;
 }
 
-DEFINE_HASHMAP(char *, Bencode, BencodeDict, hash_str, eq_str)
+DEFINE_HASHMAP(BencodeString, Bencode, BencodeDict, hash_str, eq_str)

@@ -11,12 +11,21 @@ DEFINE_VECTOR(char, CharVector)
 static int cmp_bencode_entries(const void *a, const void *b) {
   const BencodeDict_entry *entry_a = *(const BencodeDict_entry *const *)a;
   const BencodeDict_entry *entry_b = *(const BencodeDict_entry *const *)b;
-  return strcmp(entry_a->key, entry_b->key);
+
+  size_t len_a = entry_a->key.length;
+  size_t len_b = entry_b->key.length;
+  size_t min_len = len_a < len_b ? len_a : len_b;
+
+  int cmp = memcmp(entry_a->key.data, entry_b->key.data, min_len);
+  if (cmp != 0) {
+    return cmp;
+  }
+
+  return (len_a > len_b) - (len_a < len_b);
 }
 
-static inline bool CharVector_extend_quoted(CharVector *v, const char *str) {
-  size_t len = strlen(str);
-  return CharVector_push(v, '"') && CharVector_extend(v, str, len) &&
+static inline bool CharVector_extend_quoted(CharVector *v, BencodeString s) {
+  return CharVector_push(v, '"') && CharVector_extend(v, s.data, s.length) &&
          CharVector_push(v, '"');
 }
 
@@ -37,12 +46,12 @@ const char *parse_bencode(const char *encoded, Bencode *out) {
     size_t len = strtoumax(encoded, nullptr, 10);
     const char *data = colon + 1;
 
-    char *str = malloc(len + 1);
-    memcpy(str, data, len);
-    str[len] = '\0';
-
     out->type = BENCODE_STRING;
-    out->value.string = str;
+    out->value.string = (BencodeString){
+        .data = data,
+        .length = len,
+    };
+
     next = data + len;
   } else {
 
@@ -131,8 +140,8 @@ const char *parse_bencode(const char *encoded, Bencode *out) {
     }
   }
 
-  out->raw = start;
-  out->raw_len = (size_t)(next - start);
+  out->raw.data = start;
+  out->raw.length = (size_t)(next - start);
   return next;
 
 fail:
@@ -152,7 +161,7 @@ static bool bencode_to_vec(const Bencode *b, CharVector *v) {
 
   case BENCODE_INTEGER: {
     char num_buf[32];
-    int len = snprintf(num_buf, sizeof(num_buf), "%ld", b->value.integer);
+    int len = snprintf(num_buf, sizeof(num_buf), "%lld", b->value.integer);
     if (len < 0) {
       return false;
     }
@@ -190,9 +199,8 @@ static bool bencode_to_vec(const Bencode *b, CharVector *v) {
 
     for (size_t i = 0; i < b->value.dict->count; i++) {
       const BencodeDict_entry *entry = entries[i];
-      CharVector_extend_quoted(v, entry->key);
-      CharVector_push(v, ':');
-      if (!bencode_to_vec(&entry->value, v)) {
+      if (!CharVector_extend_quoted(v, entry->key) ||
+          !CharVector_push(v, ':') || !bencode_to_vec(&entry->value, v)) {
         return false;
       }
 
@@ -225,10 +233,6 @@ char *bencode_to_str(Bencode *b) {
 
 void bencode_destroy(Bencode *b) {
   switch (b->type) {
-  case BENCODE_STRING:
-    free(b->value.string);
-    break;
-
   case BENCODE_LIST:
     for (size_t i = 0; i < b->value.list->count; i++) {
       bencode_destroy(&b->value.list->data[i]);
@@ -241,13 +245,13 @@ void bencode_destroy(Bencode *b) {
     const BencodeDict_entry **entries = BencodeDict_get_entries(b->value.dict);
     for (size_t i = 0; i < b->value.dict->count; i++) {
       const BencodeDict_entry *entry = entries[i];
-      free(entry->key);
       bencode_destroy((Bencode *)&entry->value);
     }
 
     BencodeDict_destroy(b->value.dict);
     free(b->value.dict);
     break;
+  case BENCODE_STRING:
   case BENCODE_INTEGER:
     break;
   }

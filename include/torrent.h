@@ -1,17 +1,24 @@
+#pragma once
 #include <stddef.h>
 #include <stdint.h>
+
+constexpr size_t SHA1_LEN = 20;
+
+typedef struct {
+  uint8_t bytes[SHA1_LEN];
+} Sha1Hash;
 
 typedef struct {
   char *name;
   int64_t length;
   size_t piece_length;
-  size_t num_pieces;
-  uint8_t *pieces;
+  size_t piece_count;
+  Sha1Hash *pieces;
 } TorrentInfo;
 
 typedef struct {
   char *tracker_url;
-  uint8_t info_hash[20];
+  Sha1Hash info_hash;
   TorrentInfo *info;
 } Torrent;
 

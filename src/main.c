@@ -30,12 +30,22 @@ int main(int argc, char *argv[]) {
     bencode_destroy(&bencode);
   } else if (strcmp(command, "info") == 0) {
     Torrent torrent;
-    torrent_from_file(&torrent, argv[2]);
+    if (!torrent_from_file(&torrent, argv[2])) {
+      fprintf(stderr, "failed to init torrent\n");
+      return EXIT_FAILURE;
+    };
+
     printf("Tracker URL: %s\n", torrent.tracker_url);
     printf("Length: %ld \n", torrent.info->length);
     printf("Info Hash: ");
-    print_hex(torrent.info_hash, sizeof(torrent.info_hash));
+    print_hex(&torrent.info_hash);
     printf("\n");
+    printf("Piece Length: %ld\n", torrent.info->piece_length);
+    printf("Piece Hashes:");
+    for (size_t i = 0; i < torrent.info->piece_count; i++) {
+      print_hex(&torrent.info->pieces[i]);
+      printf("\n");
+    }
   } else {
     fprintf(stderr, "Unknown command: %s\n", command);
     return 1;
