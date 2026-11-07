@@ -240,3 +240,57 @@ void bencode_destroy(Bencode *b) {
     break;
   }
 }
+
+bool bencode_get_int(const Bencode *b, int64_t *out) {
+  if (b->type != BENCODE_INTEGER) {
+    return false;
+  }
+
+  *out = b->value.integer;
+  return true;
+}
+
+bool bencode_get_str(const Bencode *b, BencodeString *out) {
+  if (b->type != BENCODE_STRING) {
+    return false;
+  }
+
+  *out = b->value.string;
+  return true;
+}
+
+bool bencode_get_dict(const Bencode *b, const BencodeDict **out) {
+  if (b->type != BENCODE_DICT) {
+    return false;
+  }
+
+  *out = b->value.dict;
+  return true;
+}
+
+bool bencode_get_list(const Bencode *b, const BencodeList **out) {
+  if (b->type != BENCODE_LIST) {
+    return false;
+  }
+
+  *out = b->value.list;
+  return true;
+}
+
+bool bencode_dict_get_int(const BencodeDict *dict, const char *key,
+                          int64_t *out) {
+  Bencode val;
+  return BencodeDict_get(dict, bstr(key), &val) && bencode_get_int(&val, out);
+}
+
+bool bencode_dict_get_str(const BencodeDict *dict, const char *key,
+                          BencodeString *out) {
+  Bencode val;
+  return BencodeDict_get(dict, bstr(key), &val) && bencode_get_str(&val, out);
+}
+
+bool bencode_dict_get_dict(const BencodeDict *dict, const char *key,
+                           const BencodeDict **out) {
+  Bencode val;
+  return BencodeDict_get(dict, bstr(key), &val) && bencode_get_dict(&val, out);
+}

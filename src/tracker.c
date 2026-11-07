@@ -23,64 +23,83 @@ static size_t write_to_buffer(void *contents, size_t size, size_t nmemb,
 bool tracker_get_peers(Torrent *t, PeerVector *out) {
   bool success = false;
   CURLU *url = curl_url();
-  curl_url_set(url, CURLUPART_URL, t->tracker_url, 0);
-  size_t len = 80;
-  char hash_query[len];
-  int offset = snprintf(hash_query, len, "info_hash=");
-  for (size_t i = 0; i < 20; i++) {
-    offset += snprintf(hash_query + offset, len - offset, "%%%02x",
-                       t->info_hash.bytes[i]);
-  }
-  curl_url_set(url, CURLUPART_QUERY, hash_query, CURLU_APPENDQUERY);
-  curl_url_set(url, CURLUPART_QUERY, "peer_id=codecrafters-torrent",
-               CURLU_APPENDQUERY);
-  curl_url_set(url, CURLUPART_QUERY, "port=6881", CURLU_APPENDQUERY);
-  curl_url_set(url, CURLUPART_QUERY, "uploaded=0", CURLU_APPENDQUERY);
-  curl_url_set(url, CURLUPART_QUERY, "downloaded=0", CURLU_APPENDQUERY);
-  char left_query[32];
-  snprintf(left_query, sizeof(left_query), "left=%lld", t->info->length);
-  curl_url_set(url, CURLUPART_QUERY, left_query, CURLU_APPENDQUERY);
-  curl_url_set(url, CURLUPART_QUERY, "compact=1", CURLU_APPENDQUERY);
   CURL *handle = curl_easy_init();
-  curl_easy_setopt(handle, CURLOPT_CURLU, url);
-
   CharVector response;
   CharVector_init(&response, 0);
+
+  if (url == nullptr || handle == nullptr) {
+    fprintf(stderr, "Error: Failed to initialize curl\n");
+    goto cleanup;
+  }
+
+  char query[256];
+  int offset = snprintf(query, sizeof(query),
+                        "peer_id=codecrafters-torrent&port=6881&uploaded=0&"
+                        "downloaded=0&left=%lld&compact=1&info_hash=",
+                        (long long)t->info->length);
+
+  for (size_t i = 0; i < 20; i++) {
+    offset += snprintf(query + offset, sizeof(query) - offset, "%%%02x",
+                       t->info_hash.bytes[i]);
+  }
+
+  curl_url_set(url, CURLUPART_URL, t->tracker_url, 0);
+  curl_url_set(url, CURLUPART_QUERY, query, CURLU_APPENDQUERY);
+
+  curl_easy_setopt(handle, CURLOPT_CURLU, url);
   curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, write_to_buffer);
   curl_easy_setopt(handle, CURLOPT_WRITEDATA, (void *)&response);
+
   CURLcode res = curl_easy_perform(handle);
   if (res != CURLE_OK) {
-    fprintf(stderr, "nok");
+    fprintf(stderr, "Error: Tracker request failed: %s\n",
+            curl_easy_strerror(res));
     goto cleanup;
   }
 
   Bencode bencode;
   if (!CharVector_push(&response, '\0') ||
       !bencode_init(&bencode, response.data)) {
-    fprintf(stderr, "a");
+    fprintf(stderr, "Error: Failed to parse tracker response\n");
     goto cleanup;
   }
 
-  Bencode peers;
-  if (!BencodeDict_get(bencode.value.dict, bstr("peers"), &peers)) {
-    Bencode failure;
-    BencodeDict_get(bencode.value.dict, bstr("failure reason"), &failure);
-    fprintf(stderr, "Tracker error: %.*s\n", (int)failure.value.string.length,
-            failure.value.string.data);
+  const BencodeDict *dict = nullptr;
+  if (!bencode_get_dict(&bencode, &dict)) {
+    fprintf(stderr, "Error: Tracker response is not valid\n");
     goto cleanup_bencode;
   }
 
-  const uint8_t *data = (const uint8_t *)peers.value.string.data;
-  size_t count = peers.value.string.length / 6;
+  BencodeString peers;
+  if (!bencode_dict_get_str(dict, "peers", &peers)) {
+    BencodeString failure;
+    if (bencode_dict_get_str(dict, "failure reason", &failure)) {
+      fprintf(stderr, "Tracker error: %.*s\n", (int)failure.length,
+              failure.data);
+    } else {
+      fprintf(stderr, "Error: Tracker response missing both 'peers' and "
+                      "'failure reason'\n");
+    }
+    goto cleanup_bencode;
+  }
 
+  if (peers.length % 6 != 0) {
+    fprintf(stderr,
+            "Error: Invalid peers length (%zu bytes, expected multiple of 6)\n",
+            peers.length);
+    goto cleanup_bencode;
+  }
+
+  size_t count = peers.length / 6;
   Peer *dest = PeerVector_grow(out, count);
   if (count > 0 && dest == nullptr) {
-    fprintf(stderr, "d");
+    fprintf(stderr, "Error: Failed to allocate memory for %zu peers\n", count);
     goto cleanup_bencode;
   }
 
+  const uint8_t *data = (const uint8_t *)peers.data;
   for (size_t i = 0; i < count; i++) {
-    peer_init(data + (i * 6), &dest[i]);
+    peer_from_bytes(&dest[i], data + (i * 6));
   }
 
   success = true;
@@ -90,7 +109,11 @@ cleanup_bencode:
 
 cleanup:
   CharVector_destroy(&response);
-  curl_easy_cleanup(handle);
-  curl_url_cleanup(url);
+  if (handle != nullptr) {
+    curl_easy_cleanup(handle);
+  }
+  if (url != nullptr) {
+    curl_url_cleanup(url);
+  }
   return success;
 }

@@ -42,12 +42,12 @@ int main(int argc, char *argv[]) {
     printf("Tracker URL: %s\n", torrent.tracker_url);
     printf("Length: %ld \n", torrent.info->length);
     printf("Info Hash: ");
-    print_hex(&torrent.info_hash);
+    print_hex(torrent.info_hash.bytes, sizeof(Sha1Hash));
     printf("\n");
     printf("Piece Length: %ld\n", torrent.info->piece_length);
     printf("Piece Hashes:");
     for (size_t i = 0; i < torrent.info->piece_count; i++) {
-      print_hex(&torrent.info->pieces[i]);
+      print_hex(torrent.info->pieces[i].bytes, sizeof(Sha1Hash));
       printf("\n");
     }
     torrent_destroy(&torrent);
@@ -70,6 +70,28 @@ int main(int argc, char *argv[]) {
       printf("%s:%u\n", peer->ip, peer->port);
     }
     PeerVector_destroy(&peers);
+  } else if (strcmp(command, "handshake") == 0) {
+    Torrent torrent;
+    if (!torrent_from_file(&torrent, argv[2])) {
+      fprintf(stderr, "failed to init torrent\n");
+      return EXIT_FAILURE;
+    }
+
+    Peer peer;
+    if (!peer_from_str(&peer, argv[3])) {
+      fprintf(stderr, "invalid peer\n");
+      return EXIT_FAILURE;
+    }
+
+    PeerSession session;
+    if (!peer_session_init(&session, &peer, &torrent.info_hash)) {
+      fprintf(stderr, "could not establish session with peer \n");
+      return EXIT_FAILURE;
+    }
+
+    printf("Peer ID: ");
+    print_hex(session.peer_id, sizeof(session.peer_id));
+    printf("\n");
   } else {
     fprintf(stderr, "Unknown command: %s\n", command);
     return 1;

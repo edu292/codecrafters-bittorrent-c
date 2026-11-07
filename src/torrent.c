@@ -3,6 +3,7 @@
 #include <fcntl.h>
 #include <openssl/sha.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,45 +12,34 @@
 #include <unistd.h>
 
 bool torrent_info_init(TorrentInfo *ti, const BencodeDict *dict) {
-  Bencode len;
-  if (!BencodeDict_get(dict, bstr("length"), &len) ||
-      len.type != BENCODE_INTEGER) {
-    fprintf(stderr, "Error: 'info.length' missing or not an integer\n");
+  if (!bencode_dict_get_int(dict, "length", &ti->length) || ti->length <= 0) {
+    fprintf(stderr, "Error: 'info.length' missing or invalid\n");
     return false;
   }
 
-  if (len.value.integer <= 0) {
-    fprintf(stderr, "Error: 'info.length' must be bigger than zero\n");
+  int64_t piece_len = 0;
+  if (!bencode_dict_get_int(dict, "piece length", &piece_len) ||
+      piece_len <= 0) {
+    fprintf(stderr, "Error: 'info.piece length' missing or invalid\n");
+    return false;
+  }
+  ti->piece_length = (size_t)piece_len;
+  ti->piece_count = 1 + ((size_t)(ti->length - 1) / ti->piece_length);
+
+  size_t expected_pieces_len = sizeof(Sha1Hash) * ti->piece_count;
+  BencodeString pieces;
+  if (!bencode_dict_get_str(dict, "pieces", &pieces) ||
+      pieces.length != expected_pieces_len) {
+    fprintf(stderr, "Error: 'info.pieces' missing or length mismatch\n");
     return false;
   }
 
-  ti->length = len.value.integer;
-
-  Bencode piece_length;
-  if (!BencodeDict_get(dict, bstr("piece length"), &piece_length) ||
-      piece_length.type != BENCODE_INTEGER) {
-    fprintf(stderr, "missng piece length\n");
-    return false;
-  }
-  ti->piece_length = (size_t)piece_length.value.integer;
-  ti->piece_count = 1 + ((ti->length - 1) / ti->piece_length);
-  size_t pieces_len = sizeof(Sha1Hash) * ti->piece_count;
-
-  Bencode pieces;
-  if (!BencodeDict_get(dict, bstr("pieces"), &pieces) ||
-      pieces.type != BENCODE_STRING ||
-      pieces.value.string.length != pieces_len) {
-    fprintf(stderr, "missng pieces\n");
-    return false;
-  }
-
-  ti->pieces = malloc(pieces_len);
+  ti->pieces = malloc(expected_pieces_len);
   if (ti->pieces == nullptr) {
-    perror("malloc");
     return false;
   }
 
-  memcpy(ti->pieces, pieces.value.string.data, pieces_len);
+  memcpy(ti->pieces, pieces.data, expected_pieces_len);
   return true;
 }
 
@@ -78,34 +68,34 @@ bool torrent_from_file(Torrent *t, const char *filepath) {
   }
 
   bool success = false;
-  Bencode bencode;
 
+  Bencode bencode;
   if (!bencode_init(&bencode, data)) {
     fprintf(stderr, "Error: Failed to parse bencode from %s\n", filepath);
     goto cleanup_mmap;
   }
 
-  if (bencode.type != BENCODE_DICT) {
+  const BencodeDict *root = nullptr;
+  if (!bencode_get_dict(&bencode, &root)) {
     fprintf(stderr, "Error: Torrent root is not a dictionary\n");
     goto cleanup_bencode;
   }
 
-  Bencode announce_val;
-  if (!BencodeDict_get(bencode.value.dict, bstr("announce"), &announce_val) ||
-      announce_val.type != BENCODE_STRING) {
+  BencodeString announce;
+  if (!bencode_dict_get_str(root, "announce", &announce)) {
     fprintf(stderr, "Error: Missing or invalid 'announce' string\n");
     goto cleanup_bencode;
   }
 
-  t->tracker_url =
-      strndup(announce_val.value.string.data, announce_val.value.string.length);
+  t->tracker_url = strndup(announce.data, announce.length);
   if (t->tracker_url == nullptr) {
     goto cleanup_bencode;
   }
 
-  Bencode info_val;
-  if (!BencodeDict_get(bencode.value.dict, bstr("info"), &info_val) ||
-      info_val.type != BENCODE_DICT) {
+  Bencode info_raw;
+  const BencodeDict *info_dict = nullptr;
+  if (!BencodeDict_get(root, bstr("info"), &info_raw) ||
+      !bencode_get_dict(&info_raw, &info_dict)) {
     fprintf(stderr, "Error: Missing or invalid 'info' dictionary\n");
     goto cleanup_tracker;
   }
@@ -115,11 +105,11 @@ bool torrent_from_file(Torrent *t, const char *filepath) {
     goto cleanup_tracker;
   }
 
-  if (!torrent_info_init(t->info, info_val.value.dict)) {
+  if (!torrent_info_init(t->info, info_dict)) {
     goto cleanup_info;
   }
 
-  SHA1((const unsigned char *)info_val.raw.data, info_val.raw.length,
+  SHA1((const unsigned char *)info_raw.raw.data, info_raw.raw.length,
        (unsigned char *)&t->info_hash);
   success = true;
   goto cleanup_bencode;

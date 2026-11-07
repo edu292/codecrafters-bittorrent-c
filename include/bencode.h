@@ -56,3 +56,15 @@ static inline bool eq_str(BencodeString a, BencodeString b) {
 }
 
 DEFINE_HASHMAP(BencodeString, Bencode, BencodeDict, hash_str, eq_str)
+
+bool bencode_get_int(const Bencode *b, int64_t *out);
+bool bencode_get_str(const Bencode *b, BencodeString *out);
+bool bencode_get_dict(const Bencode *b, const BencodeDict **out);
+bool bencode_get_list(const Bencode *b, const BencodeList **out);
+
+bool bencode_dict_get_int(const BencodeDict *dict, const char *key,
+                          int64_t *out);
+bool bencode_dict_get_str(const BencodeDict *dict, const char *key,
+                          BencodeString *out);
+bool bencode_dict_get_dict(const BencodeDict *dict, const char *key,
+                           const BencodeDict **out);
