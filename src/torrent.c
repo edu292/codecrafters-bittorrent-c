@@ -45,6 +45,18 @@ bool torrent_info_init(TorrentInfo *ti, const BencodeDict *dict) {
 
 void torrent_info_destroy(TorrentInfo *ti) { free(ti->pieces); }
 
+size_t torrent_info_piece_length(const TorrentInfo *ti, size_t index) {
+  if (index >= ti->piece_count) {
+    return 0;
+  }
+
+  if (index == ti->piece_count - 1) {
+    return (size_t)ti->length - (ti->piece_length * (ti->piece_count - 1));
+  }
+
+  return ti->piece_length;
+}
+
 bool torrent_from_file(Torrent *t, const char *filepath) {
   int fd = open(filepath, O_RDONLY);
   if (fd < 0) {

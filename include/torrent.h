@@ -16,6 +16,8 @@ typedef struct {
   Sha1Hash *pieces;
 } TorrentInfo;
 
+size_t torrent_info_piece_length(const TorrentInfo *ti, size_t index);
+
 typedef struct {
   char *tracker_url;
   Sha1Hash info_hash;
