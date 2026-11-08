@@ -54,7 +54,7 @@ char *sanitize_filename(const char *raw, size_t len) {
 }
 
 bool torrent_info_init(TorrentInfo *ti, const BencodeDict *dict) {
-  BencodeString raw_name;
+  StringView raw_name;
 
   if (bencode_dict_get_str(dict, "name", &raw_name) && raw_name.length > 0) {
     ti->name = sanitize_filename(raw_name.data, raw_name.length);
@@ -78,7 +78,7 @@ bool torrent_info_init(TorrentInfo *ti, const BencodeDict *dict) {
   ti->piece_count = 1 + ((size_t)(ti->length - 1) / ti->piece_length);
 
   size_t expected_pieces_len = sizeof(Sha1Hash) * ti->piece_count;
-  BencodeString pieces;
+  StringView pieces;
   if (!bencode_dict_get_str(dict, "pieces", &pieces) ||
       pieces.length != expected_pieces_len) {
     fprintf(stderr, "Error: 'info.pieces' missing or invalid\n");
@@ -148,7 +148,7 @@ bool torrent_from_file(Torrent *t, const char *filepath) {
     goto cleanup_bencode;
   }
 
-  BencodeString announce;
+  StringView announce;
   if (!bencode_dict_get_str(root, "announce", &announce)) {
     fprintf(stderr, "Error: Missing or invalid 'announce' string\n");
     goto cleanup_bencode;
@@ -161,7 +161,7 @@ bool torrent_from_file(Torrent *t, const char *filepath) {
 
   Bencode info_raw;
   const BencodeDict *info_dict;
-  if (!BencodeDict_get(root, bstr("info"), &info_raw) ||
+  if (!BencodeDict_get(root, sv_build("info"), &info_raw) ||
       !bencode_get_dict(&info_raw, &info_dict)) {
     fprintf(stderr, "Error: Missing or invalid 'info' dictionary\n");
     goto cleanup_tracker;

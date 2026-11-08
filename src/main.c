@@ -1,12 +1,10 @@
 #include "bencode.h"
-#include "hex.h"
+#include "encoding.h"
+#include "magnet.h"
 #include "peer.h"
 #include "torrent.h"
 #include "tracker.h"
-#include <curl/curl.h>
 #include <inttypes.h>
-#include <openssl/crypto.h>
-#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -18,26 +16,17 @@ typedef bool (*CmdHandler)(int argc, char *argv[]);
 
 typedef struct {
   const char *name;
+  const char *args_syntax;
+  const char *description;
   CmdHandler handler;
 } CommandEntry;
 
-static void print_usage(const char *prog_name) {
-  fprintf(
-      stderr,
-      "Usage: %s <command> [options] <arguments>\n\n"
-      "Commands:\n"
-      "  decode <bencoded_string>                  Parse and print bencode as "
-      "JSON\n"
-      "  info <torrent_file>                      Display metainfo from a "
-      ".torrent file\n"
-      "  peers <torrent_file>                     Query tracker and list peer "
-      "IP:port pairs\n"
-      "  handshake <torrent_file> <ip:port>       Initiate handshake with peer "
-      "and print peer ID\n"
-      "  download_piece -o <out> <torrent> <idx>  Download a specific piece to "
-      "a file\n"
-      "  download -o <out> <torrent>              Download the entire file\n",
-      prog_name);
+static const CommandEntry *find_command(const char *name);
+
+static bool err_usage(const char *cmd_name) {
+  const CommandEntry *cmd = find_command(cmd_name);
+  fprintf(stderr, "Usage: bittorrent %s %s\n", cmd->name, cmd->args_syntax);
+  return false;
 }
 
 static bool load_torrent_or_log(Torrent *t, const char *path) {
@@ -48,14 +37,31 @@ static bool load_torrent_or_log(Torrent *t, const char *path) {
   return true;
 }
 
+static bool parse_output_opt(int *argc, char ***argv, const char **out_path) {
+  *out_path = NULL;
+  optind = 1;
+
+  int opt;
+  while ((opt = getopt(*argc, *argv, "o:")) != -1) {
+    if (opt == 'o') {
+      *out_path = optarg;
+    } else {
+      return false;
+    }
+  }
+
+  *argc -= optind;
+  *argv += optind;
+  return (*out_path != NULL);
+}
+
 static bool cmd_decode(int argc, char *argv[]) {
-  if (argc < 3) {
-    fprintf(stderr, "Usage: %s decode <bencoded_string>\n", argv[0]);
-    return false;
+  if (argc < 2) {
+    return err_usage(argv[0]);
   }
 
   Bencode bencode;
-  if (!bencode_init(&bencode, argv[2])) {
+  if (!bencode_init(&bencode, argv[1])) {
     fprintf(stderr, "Error: Failed to parse bencoded input\n");
     return false;
   }
@@ -63,24 +69,22 @@ static bool cmd_decode(int argc, char *argv[]) {
   char *bencode_str = bencode_to_str(&bencode);
   if (!bencode_str) {
     bencode_destroy(&bencode);
-    fprintf(stderr, "Error: Failed to serialize bencode to string\n");
+    fprintf(stderr, "Error: Failed to serialize bencode\n");
     return false;
   }
 
   printf("%s\n", bencode_str);
   free(bencode_str);
-  bencode_destroy(&bencode);
   return true;
 }
 
 static bool cmd_info(int argc, char *argv[]) {
-  if (argc < 3) {
-    fprintf(stderr, "Usage: %s info <torrent_file>\n", argv[0]);
-    return false;
+  if (argc < 2) {
+    return err_usage(argv[0]);
   }
 
   Torrent torrent;
-  if (!load_torrent_or_log(&torrent, argv[2])) {
+  if (!load_torrent_or_log(&torrent, argv[1])) {
     return false;
   }
 
@@ -101,13 +105,12 @@ static bool cmd_info(int argc, char *argv[]) {
 }
 
 static bool cmd_peers(int argc, char *argv[]) {
-  if (argc < 3) {
-    fprintf(stderr, "Usage: %s peers <torrent_file>\n", argv[0]);
-    return false;
+  if (argc < 2) {
+    return err_usage(argv[0]);
   }
 
   Torrent torrent;
-  if (!load_torrent_or_log(&torrent, argv[2])) {
+  if (!load_torrent_or_log(&torrent, argv[1])) {
     return false;
   }
 
@@ -130,21 +133,19 @@ static bool cmd_peers(int argc, char *argv[]) {
 }
 
 static bool cmd_handshake(int argc, char *argv[]) {
-  if (argc < 4) {
-    fprintf(stderr, "Usage: %s handshake <torrent_file> <peer_ip:port>\n",
-            argv[0]);
-    return false;
+  if (argc < 3) {
+    return err_usage(argv[0]);
   }
 
   Torrent torrent;
-  if (!load_torrent_or_log(&torrent, argv[2])) {
+  if (!load_torrent_or_log(&torrent, argv[1])) {
     return false;
   }
 
   Peer peer;
-  if (!peer_from_str(&peer, argv[3])) {
+  if (!peer_from_str(&peer, argv[2])) {
     fprintf(stderr, "Error: Invalid peer address '%s' (expected <ip:port>)\n",
-            argv[3]);
+            argv[2]);
     torrent_destroy(&torrent);
     return false;
   }
@@ -152,7 +153,7 @@ static bool cmd_handshake(int argc, char *argv[]) {
   PeerConnection connection;
   if (!peer_connect(&peer, &torrent, &connection)) {
     fprintf(stderr, "Error: Failed to establish peer connection with %s\n",
-            argv[3]);
+            argv[2]);
     torrent_destroy(&torrent);
     return false;
   }
@@ -167,37 +168,18 @@ static bool cmd_handshake(int argc, char *argv[]) {
 }
 
 static bool cmd_download_piece(int argc, char *argv[]) {
-  const char *out_path = nullptr;
-  int opt;
-  optind = 2;
+  const char *cmd_name = argv[0];
+  const char *out_path = NULL;
 
-  while ((opt = getopt(argc, argv, "o:")) != -1) {
-    if (opt == 'o') {
-      out_path = optarg;
-    } else {
-      fprintf(stderr,
-              "Usage: %s download_piece -o <output_path> <torrent_file> "
-              "<piece_index>\n",
-              argv[0]);
-      return false;
-    }
+  if (!parse_output_opt(&argc, &argv, &out_path) || argc < 2) {
+    return err_usage(cmd_name);
   }
 
-  if (!out_path || (argc - optind) < 2) {
-    fprintf(stderr,
-            "Error: Missing required arguments\n"
-            "Usage: %s download_piece -o <output_path> <torrent_file> "
-            "<piece_index>\n",
-            argv[0]);
-    return false;
-  }
-
-  const char *torrent_path = argv[optind];
-  char *endptr = nullptr;
-  long piece_index = strtol(argv[optind + 1], &endptr, 10);
-
+  const char *torrent_path = argv[0];
+  char *endptr = NULL;
+  long piece_index = strtol(argv[1], &endptr, 10);
   if (*endptr != '\0' || piece_index < 0) {
-    fprintf(stderr, "Error: Invalid piece index '%s'\n", argv[optind + 1]);
+    fprintf(stderr, "Error: Invalid piece index '%s'\n", argv[1]);
     return false;
   }
 
@@ -222,8 +204,8 @@ static bool cmd_download_piece(int argc, char *argv[]) {
     return false;
   }
 
-  PeerConnection connection;
-  if (!peer_connect(&peers.data[0], &torrent, &connection)) {
+  PeerConnection conn;
+  if (!peer_connect(&peers.data[0], &torrent, &conn)) {
     fprintf(stderr, "Error: Failed to connect to peer %s:%u\n",
             peers.data[0].ip, peers.data[0].port);
     PeerVector_destroy(&peers);
@@ -231,42 +213,27 @@ static bool cmd_download_piece(int argc, char *argv[]) {
     return false;
   }
 
-  bool ok = peer_download_piece_to_file(&connection, torrent.info,
+  bool ok = peer_download_piece_to_file(&conn, torrent.info,
                                         (size_t)piece_index, out_path);
   if (ok) {
     printf("Piece %ld downloaded to %s.\n", piece_index, out_path);
   }
 
-  peer_disconnect(&connection);
+  peer_disconnect(&conn);
   PeerVector_destroy(&peers);
   torrent_destroy(&torrent);
   return ok;
 }
 
 static bool cmd_download(int argc, char *argv[]) {
-  const char *out_path = nullptr;
-  int opt;
-  optind = 2;
+  const char *cmd_name = argv[0];
+  const char *out_path = NULL;
 
-  while ((opt = getopt(argc, argv, "o:")) != -1) {
-    if (opt == 'o') {
-      out_path = optarg;
-    } else {
-      fprintf(stderr, "Usage: %s download -o <output_path> <torrent_file>\n",
-              argv[0]);
-      return false;
-    }
+  if (!parse_output_opt(&argc, &argv, &out_path) || argc < 1) {
+    return err_usage(cmd_name);
   }
 
-  if (!out_path || (argc - optind) < 1) {
-    fprintf(stderr,
-            "Error: Missing required arguments\n"
-            "Usage: %s download -o <output_path> <torrent_file>\n",
-            argv[0]);
-    return false;
-  }
-
-  const char *torrent_path = argv[optind];
+  const char *torrent_path = argv[0];
 
   Torrent torrent;
   if (!load_torrent_or_log(&torrent, torrent_path)) {
@@ -284,14 +251,80 @@ static bool cmd_download(int argc, char *argv[]) {
   return ok;
 }
 
+static bool cmd_magnet_parse(int argc, char *argv[]) {
+  if (argc < 2) {
+    return err_usage(argv[0]);
+  }
+
+  Magnet magnet;
+  if (!magnet_parse(&magnet, argv[1])) {
+    fprintf(stderr, "Error: Failed to parse magnet link: malformed or missing "
+                    "required parameters\n");
+    return false;
+  }
+
+  printf("Tracker URL: %s\n", magnet.tracker);
+  printf("Info Hash: ");
+  print_hex(magnet.btih.bytes, sizeof(Sha1Hash));
+  printf("\n");
+
+  return true;
+}
+
 static const CommandEntry COMMANDS[] = {
-    {"decode", cmd_decode},
-    {"info", cmd_info},
-    {"peers", cmd_peers},
-    {"handshake", cmd_handshake},
-    {"download_piece", cmd_download_piece},
-    {"download", cmd_download},
+    {
+        "decode",
+        "<bencoded_string>",
+        "Parse and print bencode as JSON",
+        cmd_decode,
+    },
+    {
+        "info",
+        "<torrent_file>",
+        "Display metainfo from a .torrent file",
+        cmd_info,
+    },
+    {
+        "peers",
+        "<torrent_file>",
+        "Query tracker and list peer IP:port pairs",
+        cmd_peers,
+    },
+    {
+        "handshake",
+        "<torrent_file> <ip:port>",
+        "Initiate peer handshake and print peer ID",
+        cmd_handshake,
+    },
+    {
+        "download_piece",
+        "-o <out> <torrent> <idx>",
+        "Download a specific piece to a file",
+        cmd_download_piece,
+    },
+    {
+        "download",
+        "-o <out> <torrent>",
+        "Download the entire file",
+        cmd_download,
+    },
+    {
+        "magnet_parse",
+        "<magnet_link>",
+        "Parse and print magnet URI info",
+        cmd_magnet_parse,
+    },
 };
+
+static void print_usage(const char *prog_name) {
+  fprintf(stderr, "Usage: %s <command> [options] <arguments>\n\nCommands:\n",
+          prog_name);
+  for (size_t i = 0; i < sizeof(COMMANDS) / sizeof(CommandEntry); i++) {
+    const CommandEntry *c = &COMMANDS[i];
+    fprintf(stderr, "  %-14s %-28s %s\n", c->name, c->args_syntax,
+            c->description);
+  }
+}
 
 static const CommandEntry *find_command(const char *name) {
   size_t count = sizeof(COMMANDS) / sizeof(COMMANDS[0]);
@@ -319,10 +352,7 @@ int main(int argc, char *argv[]) {
     return EXIT_FAILURE;
   }
 
-  bool ok = entry->handler(argc, argv);
-
-  OPENSSL_cleanup();
-  curl_global_cleanup();
+  bool ok = entry->handler(argc - 1, &argv[1]);
 
   return ok ? EXIT_SUCCESS : EXIT_FAILURE;
 }

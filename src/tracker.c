@@ -1,15 +1,12 @@
 #include "tracker.h"
 #include "bencode.h"
-#include "hex.h"
+#include "encoding.h"
 #include "peer.h"
-#include "vector.h"
 #include <curl/curl.h>
 #include <curl/urlapi.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
-
-DEFINE_VECTOR(char, CharVector)
 
 static size_t write_to_buffer(void *contents, size_t size, size_t nmemb,
                               void *userp) {
@@ -72,9 +69,9 @@ bool tracker_get_peers(Torrent *t, PeerVector *out) {
     goto cleanup_bencode;
   }
 
-  BencodeString peers;
+  StringView peers;
   if (!bencode_dict_get_str(dict, "peers", &peers)) {
-    BencodeString failure;
+    StringView failure;
     if (bencode_dict_get_str(dict, "failure reason", &failure)) {
       fprintf(stderr, "Tracker error: %.*s\n", (int)failure.length,
               failure.data);

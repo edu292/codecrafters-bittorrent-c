@@ -1,12 +1,9 @@
 #include "bencode.h"
-#include "vector.h"
 #include <ctype.h>
 #include <inttypes.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
-
-DEFINE_VECTOR(char, CharVector)
 
 static int cmp_bencode_entries(const void *a, const void *b) {
   const BencodeDict_entry *entry_a = *(const BencodeDict_entry *const *)a;
@@ -24,7 +21,7 @@ static int cmp_bencode_entries(const void *a, const void *b) {
   return (len_a > len_b) - (len_a < len_b);
 }
 
-static inline bool CharVector_extend_quoted(CharVector *v, BencodeString s) {
+static inline bool CharVector_extend_quoted(CharVector *v, StringView s) {
   return CharVector_push(v, '"') && CharVector_extend(v, s.data, s.length) &&
          CharVector_push(v, '"');
 }
@@ -250,7 +247,7 @@ bool bencode_get_int(const Bencode *b, int64_t *out) {
   return true;
 }
 
-bool bencode_get_str(const Bencode *b, BencodeString *out) {
+bool bencode_get_str(const Bencode *b, StringView *out) {
   if (b->type != BENCODE_STRING) {
     return false;
   }
@@ -280,17 +277,20 @@ bool bencode_get_list(const Bencode *b, const BencodeList **out) {
 bool bencode_dict_get_int(const BencodeDict *dict, const char *key,
                           int64_t *out) {
   Bencode val;
-  return BencodeDict_get(dict, bstr(key), &val) && bencode_get_int(&val, out);
+  return BencodeDict_get(dict, sv_build(key), &val) &&
+         bencode_get_int(&val, out);
 }
 
 bool bencode_dict_get_str(const BencodeDict *dict, const char *key,
-                          BencodeString *out) {
+                          StringView *out) {
   Bencode val;
-  return BencodeDict_get(dict, bstr(key), &val) && bencode_get_str(&val, out);
+  return BencodeDict_get(dict, sv_build(key), &val) &&
+         bencode_get_str(&val, out);
 }
 
 bool bencode_dict_get_dict(const BencodeDict *dict, const char *key,
                            const BencodeDict **out) {
   Bencode val;
-  return BencodeDict_get(dict, bstr(key), &val) && bencode_get_dict(&val, out);
+  return BencodeDict_get(dict, sv_build(key), &val) &&
+         bencode_get_dict(&val, out);
 }
