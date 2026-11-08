@@ -1,5 +1,6 @@
 #include "tracker.h"
 #include "bencode.h"
+#include "hex.h"
 #include "peer.h"
 #include "vector.h"
 #include <curl/curl.h>
@@ -7,6 +8,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
+
 DEFINE_VECTOR(char, CharVector)
 
 static size_t write_to_buffer(void *contents, size_t size, size_t nmemb,
@@ -32,16 +34,16 @@ bool tracker_get_peers(Torrent *t, PeerVector *out) {
     goto cleanup;
   }
 
-  char query[256];
-  int offset = snprintf(query, sizeof(query),
-                        "peer_id=codecrafters-torrent&port=6881&uploaded=0&"
-                        "downloaded=0&left=%lld&compact=1&info_hash=",
-                        (long long)t->info->length);
-
-  for (size_t i = 0; i < 20; i++) {
-    offset += snprintf(query + offset, sizeof(query) - offset, "%%%02x",
-                       t->info_hash.bytes[i]);
-  }
+  char query[512];
+  char *p =
+      query + snprintf(query, sizeof(query),
+                       "port=6881&uploaded=0&downloaded=0&left=%lld&compact=1"
+                       "&peer_id=",
+                       (long long)t->info->length);
+  p = bytes_to_percent_hex(p, t->peer_id, sizeof(t->peer_id));
+  p = stpcpy(p, "&info_hash=");
+  p = bytes_to_percent_hex(p, t->info_hash.bytes, sizeof(t->info_hash));
+  *p = '\0';
 
   curl_url_set(url, CURLUPART_URL, t->tracker_url, 0);
   curl_url_set(url, CURLUPART_QUERY, query, CURLU_APPENDQUERY);

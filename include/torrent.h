@@ -2,10 +2,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-constexpr size_t SHA1_LEN = 20;
-
 typedef struct {
-  uint8_t bytes[SHA1_LEN];
+  uint8_t bytes[20];
 } Sha1Hash;
 
 typedef struct {
@@ -19,11 +17,13 @@ typedef struct {
 size_t torrent_info_piece_length(const TorrentInfo *ti, size_t index);
 
 typedef struct {
-  char *tracker_url;
   Sha1Hash info_hash;
+  uint8_t peer_id[20];
+  char *tracker_url;
   TorrentInfo *info;
 } Torrent;
 
 bool torrent_from_file(Torrent *t, const char *filepath);
 bool torrent_from_magnet(const char *magnet_uri, Torrent *out);
+bool torrent_download_to_file(Torrent *torrent, const char *out_path);
 void torrent_destroy(Torrent *t);
