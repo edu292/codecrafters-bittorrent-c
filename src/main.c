@@ -55,6 +55,23 @@ static bool parse_output_opt(int *argc, char ***argv, const char **out_path) {
   return (*out_path != NULL);
 }
 
+static bool peer_handshake_and_print(const Peer *peer, Torrent *torrent,
+                                     PeerConnectFlags flags) {
+  PeerConnection conn;
+  if (!peer_connect(peer, torrent, flags, &conn)) {
+    fprintf(stderr, "Error: Failed to establish handshake with %s:%u\n",
+            peer->ip, peer->port);
+    return false;
+  }
+
+  printf("Peer ID: ");
+  print_hex(conn.peer_id, sizeof(conn.peer_id));
+  printf("\n");
+
+  peer_disconnect(&conn);
+  return true;
+}
+
 static bool cmd_decode(int argc, char *argv[]) {
   if (argc < 2) {
     return err_usage(argv[0]);
@@ -142,29 +159,20 @@ static bool cmd_handshake(int argc, char *argv[]) {
     return false;
   }
 
+  bool ok = false;
+
   Peer peer;
   if (!peer_from_str(&peer, argv[2])) {
     fprintf(stderr, "Error: Invalid peer address '%s' (expected <ip:port>)\n",
             argv[2]);
-    torrent_destroy(&torrent);
-    return false;
+    goto cleanup;
   }
 
-  PeerConnection connection;
-  if (!peer_connect(&peer, &torrent, &connection)) {
-    fprintf(stderr, "Error: Failed to establish peer connection with %s\n",
-            argv[2]);
-    torrent_destroy(&torrent);
-    return false;
-  }
+  ok = peer_handshake_and_print(&peer, &torrent, PEER_OPT_NONE);
 
-  printf("Peer ID: ");
-  print_hex(connection.peer_id, sizeof(connection.peer_id));
-  printf("\n");
-
-  peer_disconnect(&connection);
+cleanup:
   torrent_destroy(&torrent);
-  return true;
+  return ok;
 }
 
 static bool cmd_download_piece(int argc, char *argv[]) {
@@ -205,7 +213,7 @@ static bool cmd_download_piece(int argc, char *argv[]) {
   }
 
   PeerConnection conn;
-  if (!peer_connect(&peers.data[0], &torrent, &conn)) {
+  if (!peer_connect(&peers.data[0], &torrent, PEER_OPT_NONE, &conn)) {
     fprintf(stderr, "Error: Failed to connect to peer %s:%u\n",
             peers.data[0].ip, peers.data[0].port);
     PeerVector_destroy(&peers);
@@ -271,6 +279,33 @@ static bool cmd_magnet_parse(int argc, char *argv[]) {
   return true;
 }
 
+static bool cmd_magnet_handshake(int argc, char *argv[]) {
+  if (argc < 2) {
+    return err_usage(argv[0]);
+  }
+
+  Torrent torrent;
+  if (!torrent_from_magnet(&torrent, argv[1])) {
+    return false;
+  }
+
+  bool ok = false;
+  PeerVector peers;
+  PeerVector_init(&peers, 16);
+  if (!tracker_get_peers(&torrent, &peers) || peers.count == 0) {
+    fprintf(stderr, "Error: No peers returned from tracker '%s'\n",
+            torrent.tracker_url);
+    goto cleanup;
+  }
+
+  ok = peer_handshake_and_print(&peers.data[0], &torrent, PEER_OPT_EXTENSIONS);
+
+cleanup:
+  torrent_destroy(&torrent);
+  PeerVector_destroy(&peers);
+  return ok;
+}
+
 static const CommandEntry COMMANDS[] = {
     {
         "decode",
@@ -313,6 +348,12 @@ static const CommandEntry COMMANDS[] = {
         "<magnet_link>",
         "Parse and print magnet URI info",
         cmd_magnet_parse,
+    },
+    {
+        "magnet_handshake",
+        "<magnet_link>",
+        "Query tracker and handshake with first peer",
+        cmd_magnet_handshake,
     },
 };
 

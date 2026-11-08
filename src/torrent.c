@@ -1,6 +1,7 @@
 #include "torrent.h"
 #include "bencode.h"
 #include "concurent_queue.h"
+#include "magnet.h"
 #include "peer.h"
 #include "tracker.h"
 #include <fcntl.h>
@@ -94,6 +95,45 @@ bool torrent_info_init(TorrentInfo *ti, const BencodeDict *dict) {
   return true;
 }
 
+TorrentInfo *torrent_info_from_bencode(const char *raw_data, size_t len,
+                                       const Sha1Hash *expected_hash) {
+  if (expected_hash != nullptr) {
+    Sha1Hash computed;
+    SHA1((const unsigned char *)raw_data, len, computed.bytes);
+    if (memcmp(computed.bytes, expected_hash->bytes, sizeof(Sha1Hash)) != 0) {
+      fprintf(stderr, "Error: Info hash mismatch\n");
+      return nullptr;
+    }
+  }
+
+  Bencode bencode;
+  if (!bencode_init(&bencode, raw_data)) {
+    fprintf(stderr, "Error: Failed to parse info bencode\n");
+    return nullptr;
+  }
+
+  const BencodeDict *info_dict;
+  if (!bencode_get_dict(&bencode, &info_dict)) {
+    fprintf(stderr, "Error: Info bencode is not a dictionary\n");
+    bencode_destroy(&bencode);
+    return nullptr;
+  }
+
+  TorrentInfo *ti = malloc(sizeof(TorrentInfo));
+  if (ti == nullptr) {
+    bencode_destroy(&bencode);
+    return nullptr;
+  }
+
+  if (!torrent_info_init(ti, info_dict)) {
+    free(ti);
+    ti = nullptr;
+  }
+
+  bencode_destroy(&bencode);
+  return ti;
+}
+
 void torrent_info_destroy(TorrentInfo *ti) {
   free(ti->pieces);
   free(ti->name);
@@ -109,6 +149,11 @@ size_t torrent_info_piece_length(const TorrentInfo *ti, size_t index) {
   }
 
   return ti->piece_length;
+}
+
+void torrent_init_peer_id(uint8_t peer_id[20]) {
+  memcpy(peer_id, "-EDUSKI-", 8);
+  getrandom(peer_id + 8, 12, 0);
 }
 
 bool torrent_from_file(Torrent *t, const char *filepath) {
@@ -179,8 +224,8 @@ bool torrent_from_file(Torrent *t, const char *filepath) {
   SHA1((const unsigned char *)info_raw.raw.data, info_raw.raw.length,
        (unsigned char *)&t->info_hash);
 
-  memcpy(t->peer_id, "-EDUSKI-", 8);
-  getrandom(t->peer_id + 8, 12, 0);
+  torrent_init_peer_id(t->peer_id);
+
   success = true;
   goto cleanup_bencode;
 
@@ -200,6 +245,33 @@ cleanup_mmap:
   munmap(data, file_size);
 
   return success;
+}
+
+bool torrent_from_magnet(Torrent *t, char *uri) {
+  Magnet magnet = {};
+  if (!magnet_parse(&magnet, uri)) {
+    fprintf(stderr, "Error: Failed to parse magnet link: %s\n", uri);
+    return false;
+  }
+
+  if (magnet.tracker == nullptr) {
+    fprintf(stderr, "kill me please\n");
+    return false;
+  }
+
+  t->tracker_url = strdup(magnet.tracker);
+  if (t->tracker_url == nullptr) {
+    return false;
+  }
+
+  printf("%s\n", t->tracker_url);
+  t->info_hash = magnet.btih;
+
+  torrent_init_peer_id(t->peer_id);
+
+  t->info = nullptr;
+
+  return true;
 }
 
 void torrent_destroy(Torrent *t) {
@@ -232,7 +304,7 @@ int worker(void *vctx) {
   while (ctx->downloaded_pieces < total_pieces &&
          PeerQueue_pop(ctx->peer_queue, &peer)) {
     PeerConnection conn;
-    if (!peer_connect(&peer, ctx->torrent, &conn)) {
+    if (!peer_connect(&peer, ctx->torrent, PEER_OPT_NONE, &conn)) {
       fprintf(stderr, "[worker] Handshake failed with %s:%u\n", peer.ip,
               peer.port);
       continue;

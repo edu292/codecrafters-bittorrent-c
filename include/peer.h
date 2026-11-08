@@ -13,6 +13,11 @@ void peer_from_bytes(Peer *p, const uint8_t *src);
 bool peer_from_str(Peer *p, const char *src);
 
 typedef enum {
+  PEER_OPT_NONE = 0,
+  PEER_OPT_EXTENSIONS = (1 << 0),
+} PeerConnectFlags;
+
+typedef enum {
   PEER_DL_OK = 0,
   PEER_DL_MISSING_PIECE,
   PEER_DL_CHOKED,
@@ -30,7 +35,8 @@ typedef struct {
   bool is_interested;
 } PeerConnection;
 
-bool peer_connect(const Peer *p, const Torrent *t, PeerConnection *pc);
+bool peer_connect(const Peer *p, const Torrent *t, PeerConnectFlags pcf,
+                  PeerConnection *pc);
 void peer_disconnect(PeerConnection *pc);
 PeerDownloadStatus peer_download_piece(PeerConnection *pc,
                                        const TorrentInfo *ti,

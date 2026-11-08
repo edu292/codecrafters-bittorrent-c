@@ -23,7 +23,7 @@ typedef struct {
   TorrentInfo *info;
 } Torrent;
 
-bool torrent_from_file(Torrent *t, const char *filepath);
-bool torrent_from_magnet(const char *magnet_uri, Torrent *out);
-bool torrent_download_to_file(Torrent *torrent, const char *out_path);
+bool torrent_from_file(Torrent *t, const char *path);
+bool torrent_from_magnet(Torrent *t, char *uri);
+bool torrent_download_to_file(Torrent *t, const char *path);
 void torrent_destroy(Torrent *t);

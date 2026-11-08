@@ -216,8 +216,18 @@ bool peer_wait_for_msg(PeerConnection *pc, PeerMessageId expected_id,
       break;
 
     case PEER_MSG_BITFIELD:
-      if (payload_len <= pc->bitfield_length) {
-        memcpy(pc->bitfield, out->payload, out->length);
+      if (pc->bitfield_length == 0) {
+        pc->bitfield = malloc(payload_len);
+        if (pc->bitfield != nullptr) {
+          memcpy(pc->bitfield, out->payload, payload_len);
+          pc->bitfield_length = payload_len;
+        }
+      } else {
+        if (payload_len != pc->bitfield_length) {
+          return false;
+        }
+
+        memcpy(pc->bitfield, out->payload, payload_len);
       }
       break;
     }
@@ -272,7 +282,8 @@ peer_msg_piece_parse(PeerMessage *msg, size_t payload_len, size_t *block_size) {
   return p;
 }
 
-bool peer_connect(const Peer *p, const Torrent *t, PeerConnection *pc) {
+bool peer_connect(const Peer *p, const Torrent *t, PeerConnectFlags pcf,
+                  PeerConnection *pc) {
   int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
   if (fd < 0) {
     return false;
@@ -291,13 +302,17 @@ bool peer_connect(const Peer *p, const Torrent *t, PeerConnection *pc) {
     return false;
   }
 
-  PeerHandshake req = {};
-  req.pstrlen = 19;
-  memcpy(req.pstr, "BitTorrent protocol", 19);
-  memcpy(req.info_hash.bytes, t->info_hash.bytes, 20);
-  memcpy(req.peer_id, t->peer_id, 20);
+  PeerHandshake hndshk = {};
+  hndshk.pstrlen = 19;
+  memcpy(hndshk.pstr, "BitTorrent protocol", 19);
+  memcpy(hndshk.info_hash.bytes, t->info_hash.bytes, 20);
+  memcpy(hndshk.peer_id, t->peer_id, 20);
 
-  if (!write_all(fd, &req, sizeof(req))) {
+  if (pcf & PEER_OPT_EXTENSIONS) {
+    hndshk.reserved[5] |= 1 << 4;
+  }
+
+  if (!write_all(fd, &hndshk, sizeof(hndshk))) {
     fprintf(stderr, "Failed to send handshake\n");
     close(fd);
     return false;
@@ -318,18 +333,24 @@ bool peer_connect(const Peer *p, const Torrent *t, PeerConnection *pc) {
     return false;
   }
 
-  size_t bf_len = (t->info->piece_count + 7) / 8;
-  uint8_t *bf = calloc(bf_len, sizeof(uint8_t));
-  if (bf == nullptr) {
-    close(fd);
-    return false;
+  if (t->info != nullptr) {
+    size_t bf_len = (t->info->piece_count + 7) / 8;
+    uint8_t *bf = calloc(bf_len, sizeof(uint8_t));
+    if (bf == nullptr) {
+      close(fd);
+      return false;
+    }
+
+    pc->bitfield = bf;
+    pc->bitfield_length = bf_len;
+  } else {
+    pc->bitfield = nullptr;
+    pc->bitfield_length = 0;
   }
 
   pc->fd = fd;
   pc->is_choked = true;
   pc->is_interested = false;
-  pc->bitfield = bf;
-  pc->bitfield_length = bf_len;
   memcpy(pc->peer_id, res.peer_id, sizeof(pc->peer_id));
 
   return true;

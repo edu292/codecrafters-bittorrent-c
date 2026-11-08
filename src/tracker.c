@@ -31,12 +31,14 @@ bool tracker_get_peers(Torrent *t, PeerVector *out) {
     goto cleanup;
   }
 
+  long long left_bytes =
+      (t->info != nullptr) ? (long long)t->info->length : 999;
   char query[512];
   char *p =
       query + snprintf(query, sizeof(query),
                        "port=6881&uploaded=0&downloaded=0&left=%lld&compact=1"
                        "&peer_id=",
-                       (long long)t->info->length);
+                       left_bytes);
   p = bytes_to_percent_hex(p, t->peer_id, sizeof(t->peer_id));
   p = stpcpy(p, "&info_hash=");
   p = bytes_to_percent_hex(p, t->info_hash.bytes, sizeof(t->info_hash));
