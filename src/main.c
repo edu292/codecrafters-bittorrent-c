@@ -297,7 +297,18 @@ static bool cmd_magnet_handshake(int argc, char *argv[]) {
     goto cleanup;
   }
 
-  ok = peer_handshake_and_print(&peers.data[0], &torrent);
+  PeerConnection conn;
+  if (!peer_connect(&peers.data[0], &torrent, &conn)) {
+    return false;
+  }
+
+  printf("Peer ID: ");
+  print_hex(conn.peer_id.bytes, sizeof(conn.peer_id));
+  printf("\n");
+
+  printf("Peer Metadata Extension ID: %u\n", conn.extensions_table[1]);
+  peer_disconnect(&conn);
+  ok = true;
 
 cleanup:
   torrent_destroy(&torrent);

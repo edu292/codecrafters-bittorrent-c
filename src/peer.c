@@ -242,6 +242,39 @@ static inline MsgPiecePayload *peer_msg_piece_parse(Message *msg,
   return p;
 }
 
+bool extended_message_parse(const Message *msg, ExtendedMessage *out) {
+  if (msg->payload_len < 1) {
+    return false;
+  }
+
+  const uint8_t *raw = msg->payload;
+  out->extended_id = raw[0];
+
+  Bencode bencode;
+  const char *bencode_start = (const char *)(raw + 1);
+  const char *bencode_end = parse_bencode(bencode_start, &bencode);
+  if (bencode_end == nullptr) {
+    return false;
+  }
+
+  if (bencode.type != BENCODE_DICT) {
+    bencode_destroy(&bencode);
+    return false;
+  }
+
+  out->header = *bencode.value.dict;
+  free(bencode.value.dict);
+
+  size_t parsed_len = (size_t)(bencode_end - (const char *)raw);
+  out->extra = raw + parsed_len;
+  out->extra_len = msg->payload_len - parsed_len;
+  return true;
+}
+
+void parsed_extended_message_destroy(ExtendedMessage *msg) {
+  BencodeDict_destroy(&msg->header);
+}
+
 bool peer_extended_messages_handshake(PeerConnection *pc) {
   CharVector handshake_payload;
   CharVector_init(&handshake_payload, 1024);
@@ -259,25 +292,19 @@ bool peer_extended_messages_handshake(PeerConnection *pc) {
     return false;
   }
 
-  return true;
-
   Message msg = {};
   peer_recv_message(pc->fd, &msg);
   if (msg.id != MSG_EXTENDED) {
     return false;
   }
 
-  ExtendedMessage *their_handshake = msg.payload;
-  if (their_handshake->extended_id != EXTENDED_MSG_HANDSHAKE) {
+  ExtendedMessage res = {};
+  if (!extended_message_parse(&msg, &res)) {
     return false;
-  }
+  };
 
-  Bencode payload_raw;
-  const BencodeDict *payload;
   const BencodeDict *m;
-  if (!bencode_init(&payload_raw, their_handshake->payload) ||
-      !bencode_get_dict(&payload_raw, &payload) ||
-      !bencode_dict_get_dict(payload, "m", &m)) {
+  if (!bencode_dict_get_dict(&res.header, "m", &m)) {
     return false;
   }
 
