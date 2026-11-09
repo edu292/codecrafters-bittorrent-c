@@ -1,7 +1,6 @@
 #pragma once
-#include "hashmap.h"
-#include "string_view.h"
-#include "vector.h"
+
+#include <corsair/types.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -29,9 +28,6 @@ typedef struct Bencode {
 bool bencode_init(Bencode *b, const char *encoded);
 char *bencode_to_str(Bencode *b);
 void bencode_destroy(Bencode *b);
-
-DEFINE_VECTOR(Bencode, BencodeList)
-DEFINE_HASHMAP(StringView, Bencode, BencodeDict, sv_hash, sv_eq)
 
 bool bencode_get_int(const Bencode *b, int64_t *out);
 bool bencode_get_str(const Bencode *b, StringView *out);

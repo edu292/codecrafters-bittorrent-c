@@ -1,6 +1,13 @@
-#include "peer.h"
-#include "torrent.h"
+#include "bencode_internal.h"
+#include "bencode_write.h"
+#include "io_util.h"
+#include "peer_internal.h"
+#include "peer_proto.h"
 #include <arpa/inet.h>
+#include <corsair/bencode.h>
+#include <corsair/peer.h>
+#include <corsair/torrent.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <openssl/sha.h>
@@ -15,102 +22,11 @@
 #include <sys/uio.h>
 #include <unistd.h>
 
-constexpr size_t PEER_BLOCK_SIZE = 16ULL * 1024;
-
-typedef struct __attribute__((packed)) {
-  uint8_t pstrlen;
-  char pstr[19];
-  uint8_t reserved[8];
-  Sha1Hash info_hash;
-  uint8_t peer_id[20];
-} PeerHandshake;
-
-typedef enum : uint8_t {
-  PEER_MSG_CHOKE = 0,
-  PEER_MSG_UNCHOKE = 1,
-  PEER_MSG_INTERESTED = 2,
-  PEER_MSG_NOT_INTERESTED = 3,
-  PEER_MSG_HAVE = 4,
-  PEER_MSG_BITFIELD = 5,
-  PEER_MSG_REQUEST = 6,
-  PEER_MSG_PIECE = 7,
-  PEER_MSG_CANCEL = 8,
-} PeerMessageId;
-
-typedef struct {
-  uint32_t length;
-  PeerMessageId id;
-  void *payload;
-} PeerMessage;
-
-typedef struct {
-  uint32_t index;
-  uint32_t begin;
-  uint32_t length;
-} PeerMsgRequestPayload;
-
-typedef struct {
-  uint32_t index;
-  uint32_t begin;
-  uint8_t block[];
-} PeerMsgPiecePayload;
-
-bool writev_all(int fd, struct iovec *iov, int iovcnt) {
-  while (iovcnt > 0) {
-    ssize_t n = writev(fd, iov, iovcnt);
-    if (n <= 0) {
-      return false;
-    }
-
-    size_t written = (size_t)n;
-    while (iovcnt > 0 && written >= iov->iov_len) {
-      written -= iov->iov_len;
-      iov++;
-      iovcnt--;
-    }
-
-    if (iovcnt > 0 && written > 0) {
-      iov->iov_base = (char *)iov->iov_base + written;
-      iov->iov_len -= written;
-    }
-  }
-
-  return true;
+bool peer_vector_init(PeerVector *pv, size_t capacity) {
+  return PeerVector_init(pv, capacity);
 }
 
-bool read_all(int fd, void *buf, size_t len) {
-  uint8_t *ptr = (uint8_t *)buf;
-  size_t remaining = len;
-
-  while (remaining > 0) {
-    ssize_t n = read(fd, ptr, remaining);
-    if (n <= 0) {
-      return false;
-    }
-
-    ptr += n;
-    remaining -= (size_t)n;
-  }
-
-  return true;
-}
-
-bool write_all(int fd, const void *buf, size_t len) {
-  const uint8_t *ptr = (const uint8_t *)buf;
-  size_t remaining = len;
-
-  while (remaining > 0) {
-    ssize_t n = write(fd, ptr, remaining);
-    if (n <= 0) {
-      return false;
-    }
-
-    ptr += n;
-    remaining -= (size_t)n;
-  }
-
-  return true;
-}
+void peer_vector_destroy(PeerVector *pv) { PeerVector_destroy(pv); }
 
 void peer_from_bytes(Peer *p, const uint8_t *src) {
   snprintf(p->ip, sizeof(p->ip), "%u.%u.%u.%u", src[0], src[1], src[2], src[3]);
@@ -136,34 +52,15 @@ bool peer_from_str(Peer *p, const char *src) {
   return true;
 }
 
-static inline bool peer_has_piece(const PeerConnection *pc,
-                                  size_t piece_index) {
-  size_t byte_index = piece_index / 8;
-  if (byte_index >= pc->bitfield_length) {
-    return false;
-  }
-
-  uint8_t bit_mask = (uint8_t)(1U << (7 - (piece_index % 8)));
-  return (pc->bitfield[byte_index] & bit_mask) != 0;
-}
-
-static inline void peer_set_piece(PeerConnection *pc, size_t piece_index) {
-  size_t byte_idx = piece_index / 8;
-  if (byte_idx >= pc->bitfield_length) {
-    return;
-  }
-
-  pc->bitfield[byte_idx] |= (uint8_t)(1U << (7 - (piece_index % 8)));
-}
-
-bool peer_recv_message(int fd, PeerMessage *msg, size_t *out_payload_len) {
+bool peer_recv_message(int fd, Message *msg) {
   while (true) {
-    if (!read_all(fd, &msg->length, sizeof(msg->length))) {
+    uint32_t wire_len;
+    if (!read_all(fd, &wire_len, sizeof(wire_len))) {
       return false;
     }
 
-    msg->length = ntohl(msg->length);
-    if (msg->length == 0) {
+    wire_len = ntohl(wire_len);
+    if (wire_len == 0) {
       continue;
     }
 
@@ -171,8 +68,8 @@ bool peer_recv_message(int fd, PeerMessage *msg, size_t *out_payload_len) {
       return false;
     }
 
-    size_t payload_len = msg->length - sizeof(msg->id);
-    *out_payload_len = payload_len;
+    size_t payload_len = wire_len - sizeof(msg->id);
+    msg->payload_len = payload_len;
 
     msg->payload = nullptr;
     if (payload_len > 0) {
@@ -191,99 +88,216 @@ bool peer_recv_message(int fd, PeerMessage *msg, size_t *out_payload_len) {
   }
 }
 
-bool peer_wait_for_msg(PeerConnection *pc, PeerMessageId expected_id,
-                       PeerMessage *out, size_t *out_payload_len) {
-  size_t payload_len;
-  while (peer_recv_message(pc->fd, out, &payload_len)) {
-    switch (out->id) {
-    case PEER_MSG_CHOKE:
-      pc->is_choked = true;
-      if (expected_id == PEER_MSG_PIECE) {
-        free(out->payload);
-        out->payload = nullptr;
-        return false;
-      }
-      break;
+static bool peer_handle_msg(PeerConnection *pc, const Message *msg) {
+  if (!msg_has_payload(msg->id) && msg->payload_len != 0) {
+    return false;
+  }
 
-    case PEER_MSG_UNCHOKE:
-      pc->is_choked = false;
-      break;
+  switch (msg->id) {
+  case MSG_CHOKE:
+    peer_state_set(pc, PEER_AM_CHOKED);
+    break;
+  case MSG_UNCHOKE:
+    peer_state_clear(pc, PEER_AM_CHOKED);
+    break;
+  case MSG_INTERESTED:
+    peer_state_set(pc, PEER_AM_WANTED);
+    break;
+  case MSG_NOT_INTERESTED:
+    peer_state_clear(pc, PEER_AM_WANTED);
+    break;
+  case MSG_HAVE:
+    if (msg->payload_len != sizeof(uint32_t)) {
+      return false;
+    }
 
-    case PEER_MSG_HAVE:
-      if (payload_len == sizeof(uint32_t)) {
-        peer_set_piece(pc, ntohl(*(uint32_t *)out->payload));
-      }
-      break;
+    peer_set_piece(pc, ntohl(*(const uint32_t *)msg->payload));
+    break;
+  case MSG_BITFIELD:
+    return false;
+  default:
+    break;
+  }
 
-    case PEER_MSG_BITFIELD:
-      if (pc->bitfield_length == 0) {
-        pc->bitfield = malloc(payload_len);
-        if (pc->bitfield != nullptr) {
-          memcpy(pc->bitfield, out->payload, payload_len);
-          pc->bitfield_length = payload_len;
-        }
-      } else {
-        if (payload_len != pc->bitfield_length) {
-          return false;
-        }
+  return true;
+}
 
-        memcpy(pc->bitfield, out->payload, payload_len);
-      }
-      break;
+PeerWaitResult peer_wait_for_msg(PeerConnection *pc, MessageId expected_id,
+                                 Message *out) {
+  while (peer_recv_message(pc->fd, out)) {
+    if (!peer_handle_msg(pc, out)) {
+      free(out->payload);
+      out->payload = nullptr;
+      return PEER_WAIT_ERR_PROTO;
+    }
+
+    if (out->id == MSG_CHOKE && expected_id == MSG_PIECE) {
+      free(out->payload);
+      out->payload = nullptr;
+      return PEER_WAIT_ERR_CHOKED;
     }
 
     if (out->id == expected_id) {
-      if (out_payload_len != nullptr) {
-        *out_payload_len = payload_len;
-      }
-      return true;
+      return PEER_WAIT_OK;
     }
 
     free(out->payload);
     out->payload = nullptr;
   }
 
-  return false;
+  return PEER_WAIT_ERR_SOCKET;
 }
 
-bool peer_send_msg(int fd, PeerMessageId id, void *payload,
+static bool peer_recv_bitfield(PeerConnection *pc) {
+  struct timeval tv = {.tv_sec = 3, .tv_usec = 0};
+  if (setsockopt(pc->fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
+    return false;
+  }
+
+  errno = 0;
+  Message msg = {};
+  bool ok = true;
+  if (peer_recv_message(pc->fd, &msg)) {
+    if (msg.id == MSG_BITFIELD) {
+      if (pc->bitfield != nullptr) {
+        if (msg.payload_len != pc->bitfield_length) {
+          ok = false;
+        } else {
+          memcpy(pc->bitfield, msg.payload, msg.payload_len);
+        }
+      } else {
+        pc->bitfield = malloc(msg.payload_len);
+        if (pc->bitfield == nullptr) {
+          ok = false;
+        } else {
+          memcpy(pc->bitfield, msg.payload, msg.payload_len);
+          pc->bitfield_length = msg.payload_len;
+        }
+      }
+    } else if (!peer_handle_msg(pc, &msg)) {
+      ok = false;
+    }
+
+    free(msg.payload);
+  } else {
+    if (errno != 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+      ok = false;
+    }
+  }
+
+  struct timeval reset_tv = {.tv_sec = 0, .tv_usec = 0};
+  setsockopt(pc->fd, SOL_SOCKET, SO_RCVTIMEO, &reset_tv, sizeof(reset_tv));
+
+  return ok;
+}
+
+bool peer_send_msg(int fd, MessageId id, const void *payload,
                    size_t payload_len) {
   uint32_t net_len = htonl((uint32_t)(payload_len + sizeof(id)));
   struct iovec iov[3] = {
       {.iov_base = &net_len, .iov_len = sizeof(net_len)},
       {.iov_base = &id, .iov_len = sizeof(id)},
-      {.iov_base = payload, .iov_len = payload_len},
+      {.iov_base = (void *)payload, .iov_len = payload_len},
   };
 
   int iovcnt = payload_len > 0 ? 3 : 2;
   return writev_all(fd, iov, iovcnt);
 }
 
-static inline PeerMsgRequestPayload
+bool peer_send_extended_msg(int fd, uint8_t ext_id, const void *payload,
+                            size_t payload_len) {
+  uint32_t total_len = htonl((uint32_t)(1 + 1 + payload_len));
+  uint8_t msg_id = MSG_EXTENDED;
+
+  struct iovec iov[] = {
+      {.iov_base = &total_len, .iov_len = sizeof(total_len)},
+      {.iov_base = &msg_id, .iov_len = 1},
+      {.iov_base = &ext_id, .iov_len = 1},
+      {.iov_base = (void *)payload, .iov_len = payload_len},
+  };
+
+  return writev_all(fd, iov, payload_len > 0 ? 4 : 3);
+}
+
+static inline MsgRequestPayload
 peer_msg_request_build(uint32_t index, uint32_t begin, uint32_t length) {
-  return (PeerMsgRequestPayload){
+  return (MsgRequestPayload){
       .index = htonl(index),
       .begin = htonl(begin),
       .length = htonl(length),
   };
 }
 
-static inline PeerMsgPiecePayload *
-peer_msg_piece_parse(PeerMessage *msg, size_t payload_len, size_t *block_size) {
-  if (payload_len < sizeof(PeerMsgPiecePayload)) {
+static inline MsgPiecePayload *peer_msg_piece_parse(Message *msg,
+                                                    size_t *block_size) {
+  if (msg->payload_len < sizeof(MsgPiecePayload)) {
     return nullptr;
   }
 
-  PeerMsgPiecePayload *p = msg->payload;
+  MsgPiecePayload *p = msg->payload;
   p->index = ntohl(p->index);
   p->begin = ntohl(p->begin);
 
-  *block_size = payload_len - sizeof(PeerMsgPiecePayload);
+  *block_size = msg->payload_len - sizeof(MsgPiecePayload);
   return p;
 }
 
-bool peer_connect(const Peer *p, const Torrent *t, PeerConnectFlags pcf,
-                  PeerConnection *pc) {
+bool peer_extended_messages_handshake(PeerConnection *pc) {
+  CharVector handshake_payload;
+  CharVector_init(&handshake_payload, 1024);
+  bencode_write_dict_begin(&handshake_payload);
+  bencode_write_str(&handshake_payload, "m");
+  bencode_write_dict_begin(&handshake_payload);
+  bencode_write_key_int(&handshake_payload, "ut_metadata",
+                        EXTENDED_MSG_METADATA);
+  bencode_write_dict_end(&handshake_payload);
+  bencode_write_dict_end(&handshake_payload);
+
+  if (!peer_send_extended_msg(pc->fd, EXTENDED_MSG_HANDSHAKE,
+                              handshake_payload.data,
+                              handshake_payload.count)) {
+    return false;
+  }
+
+  return true;
+
+  Message msg = {};
+  peer_recv_message(pc->fd, &msg);
+  if (msg.id != MSG_EXTENDED) {
+    return false;
+  }
+
+  ExtendedMessage *their_handshake = msg.payload;
+  if (their_handshake->extended_id != EXTENDED_MSG_HANDSHAKE) {
+    return false;
+  }
+
+  Bencode payload_raw;
+  const BencodeDict *payload;
+  const BencodeDict *m;
+  if (!bencode_init(&payload_raw, their_handshake->payload) ||
+      !bencode_get_dict(&payload_raw, &payload) ||
+      !bencode_dict_get_dict(payload, "m", &m)) {
+    return false;
+  }
+
+  const BencodeDict_entry **entries = BencodeDict_get_entries(m);
+  for (size_t i = 0; i < m->count; i++) {
+    const BencodeDict_entry *entry = entries[i];
+    if (sv_eq_cstr(entry->key, "ut_metadata")) {
+      int64_t peer_extension_id;
+      if (!bencode_get_int(&entry->value, &peer_extension_id)) {
+        continue;
+      }
+
+      pc->extensions_table[EXTENDED_MSG_METADATA] = (uint8_t)peer_extension_id;
+    }
+  }
+
+  return true;
+}
+
+bool peer_connect(const Peer *p, const Torrent *t, PeerConnection *pc) {
   int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
   if (fd < 0) {
     return false;
@@ -302,33 +316,28 @@ bool peer_connect(const Peer *p, const Torrent *t, PeerConnectFlags pcf,
     return false;
   }
 
-  PeerHandshake hndshk = {};
-  hndshk.pstrlen = 19;
-  memcpy(hndshk.pstr, "BitTorrent protocol", 19);
-  memcpy(hndshk.info_hash.bytes, t->info_hash.bytes, 20);
-  memcpy(hndshk.peer_id, t->peer_id, 20);
-
-  if (pcf & PEER_OPT_EXTENSIONS) {
-    hndshk.reserved[5] |= 1 << 4;
-  }
+  static const char pstr[] = "BitTorrent protocol";
+  size_t pstrlen = sizeof(pstr) - 1;
+  Handshake hndshk = {
+      .pstrlen = (uint8_t)pstrlen,
+      .info_hash = t->info_hash,
+      .peer_id = t->peer_id,
+  };
+  memcpy(hndshk.pstr, pstr, pstrlen);
+  handshake_advertise_extension(&hndshk, EXTENDED_MESSAGES);
 
   if (!write_all(fd, &hndshk, sizeof(hndshk))) {
-    fprintf(stderr, "Failed to send handshake\n");
     close(fd);
     return false;
   }
 
-  PeerHandshake res;
-  if (!read_all(fd, &res, sizeof(res))) {
-    fprintf(stderr, "Failed to read handshake response\n");
+  if (!read_all(fd, &hndshk, sizeof(hndshk))) {
     close(fd);
     return false;
   }
 
-  if (res.pstrlen != 19 || memcmp(res.pstr, "BitTorrent protocol", 19) != 0 ||
-      memcmp(res.info_hash.bytes, t->info_hash.bytes, 20) != 0) {
-    fprintf(stderr,
-            "Handshake validation failed: protocol/info_hash mismatch\n");
+  if (hndshk.pstrlen != pstrlen || memcmp(hndshk.pstr, pstr, pstrlen) != 0 ||
+      memcmp(hndshk.info_hash.bytes, t->info_hash.bytes, 20) != 0) {
     close(fd);
     return false;
   }
@@ -349,76 +358,109 @@ bool peer_connect(const Peer *p, const Torrent *t, PeerConnectFlags pcf,
   }
 
   pc->fd = fd;
-  pc->is_choked = true;
-  pc->is_interested = false;
-  memcpy(pc->peer_id, res.peer_id, sizeof(pc->peer_id));
+  pc->state = PEER_STATE_INIT;
+  pc->peer_id = hndshk.peer_id;
+
+  bool supports_extended_messages = false;
+  if (handshake_supports_extension(&hndshk, EXTENDED_MESSAGES)) {
+    peer_state_set(pc, PEER_EXTENSIONS_ENABLED);
+    pc->extensions_table = calloc(_EXT_COUNT, sizeof(uint8_t));
+    supports_extended_messages = true;
+  } else {
+    pc->extensions_table = nullptr;
+  }
+
+  if (!peer_recv_bitfield(pc)) {
+    peer_disconnect(pc);
+    return false;
+  }
+
+  if (supports_extended_messages && !peer_extended_messages_handshake(pc)) {
+    return false;
+  }
 
   return true;
 }
 
 void peer_disconnect(PeerConnection *pc) {
-  free(pc->bitfield);
-  pc->bitfield = nullptr;
-  pc->bitfield_length = 0;
+  if (pc->bitfield != nullptr) {
+    free(pc->bitfield);
+    pc->bitfield = nullptr;
+    pc->bitfield_length = 0;
+  }
+
+  if (peer_state_is(pc, PEER_EXTENSIONS_ENABLED)) {
+    free(pc->extensions_table);
+  }
   close(pc->fd);
 }
 
-PeerDownloadStatus peer_download_piece(PeerConnection *pc,
+static inline PeerDownloadResult peer_dl_result_from_wait(PeerWaitResult res) {
+  switch (res) {
+  case PEER_WAIT_OK:
+    return PEER_DL_OK;
+  case PEER_WAIT_ERR_CHOKED:
+    return PEER_DL_ERR_CHOKED;
+  case PEER_WAIT_ERR_SOCKET:
+    return PEER_DL_ERR_SOCKET;
+  case PEER_WAIT_ERR_PROTO:
+  default:
+    return PEER_DL_ERR_CORRUPTED;
+  }
+}
+
+PeerDownloadResult peer_download_piece(PeerConnection *pc,
                                        const TorrentInfo *ti,
                                        size_t piece_index, uint8_t *out) {
   size_t piece_length = torrent_info_piece_length(ti, piece_index);
   if (piece_length == 0) {
-    return PEER_DL_INVALID_ARGS;
+    return PEER_DL_ERR_INVALID_ARGS;
   }
 
-  if (!pc->is_interested) {
-    if (!peer_send_msg(pc->fd, PEER_MSG_INTERESTED, nullptr, 0)) {
+  if (!peer_state_is(pc, PEER_AM_INTERESTED)) {
+    if (!peer_send_msg(pc->fd, MSG_INTERESTED, nullptr, 0)) {
       return PEER_DL_ERR_SOCKET;
     }
-
-    pc->is_interested = true;
+    peer_state_set(pc, PEER_AM_INTERESTED);
   }
 
-  PeerMessage msg = {};
-  if (pc->is_choked) {
-    if (!peer_wait_for_msg(pc, PEER_MSG_UNCHOKE, &msg, nullptr)) {
-      return PEER_DL_ERR_SOCKET;
-    }
-
+  Message msg = {};
+  if (peer_state_is(pc, PEER_AM_CHOKED)) {
+    PeerWaitResult res = peer_wait_for_msg(pc, MSG_UNCHOKE, &msg);
     free(msg.payload);
+    if (res != PEER_WAIT_OK) {
+      return peer_dl_result_from_wait(res);
+    }
   }
 
   if (!peer_has_piece(pc, piece_index)) {
-    return PEER_DL_MISSING_PIECE;
+    return PEER_DL_ERR_MISSING_PIECE;
   }
 
-  size_t block_count = (piece_length + PEER_BLOCK_SIZE - 1) / PEER_BLOCK_SIZE;
+  size_t block_count = (piece_length + BLOCK_SIZE - 1) / BLOCK_SIZE;
   for (size_t i = 0; i < block_count; i++) {
-    uint32_t begin = (uint32_t)(i * PEER_BLOCK_SIZE);
+    uint32_t begin = (uint32_t)(i * BLOCK_SIZE);
     size_t remaining = piece_length - begin;
     uint32_t block_length =
-        (uint32_t)(remaining > PEER_BLOCK_SIZE ? PEER_BLOCK_SIZE : remaining);
-    PeerMsgRequestPayload req =
+        (uint32_t)(remaining > BLOCK_SIZE ? BLOCK_SIZE : remaining);
+    MsgRequestPayload req =
         peer_msg_request_build((uint32_t)piece_index, begin, block_length);
-
-    if (!peer_send_msg(pc->fd, PEER_MSG_REQUEST, &req, sizeof(req))) {
+    if (!peer_send_msg(pc->fd, MSG_REQUEST, &req, sizeof(req))) {
       return PEER_DL_ERR_SOCKET;
     }
   }
 
   for (size_t i = 0; i < block_count; i++) {
-    size_t payload_len;
-    if (!peer_wait_for_msg(pc, PEER_MSG_PIECE, &msg, &payload_len)) {
-      return pc->is_choked ? PEER_DL_CHOKED : PEER_DL_ERR_SOCKET;
+    PeerWaitResult res = peer_wait_for_msg(pc, MSG_PIECE, &msg);
+    if (res != PEER_WAIT_OK) {
+      return peer_dl_result_from_wait(res);
     }
-
     size_t block_size;
-    PeerMsgPiecePayload *payload =
-        peer_msg_piece_parse(&msg, payload_len, &block_size);
+    MsgPiecePayload *payload = peer_msg_piece_parse(&msg, &block_size);
     if (payload == nullptr || payload->index != piece_index ||
         payload->begin + block_size > piece_length) {
       free(msg.payload);
-      return PEER_DL_CORRUPTED;
+      return PEER_DL_ERR_CORRUPTED;
     }
 
     memcpy(out + payload->begin, payload->block, block_size);
@@ -429,7 +471,7 @@ PeerDownloadStatus peer_download_piece(PeerConnection *pc,
   SHA1(out, piece_length, piece_hash.bytes);
   if (memcmp(piece_hash.bytes, ti->pieces[piece_index].bytes,
              sizeof(Sha1Hash)) != 0) {
-    return PEER_DL_CORRUPTED;
+    return PEER_DL_ERR_CORRUPTED;
   }
 
   return PEER_DL_OK;
@@ -439,7 +481,6 @@ bool peer_download_piece_to_file(PeerConnection *pc, const TorrentInfo *ti,
                                  size_t piece_index, const char *out_path) {
   size_t piece_len = torrent_info_piece_length(ti, piece_index);
   if (piece_len == 0) {
-    fprintf(stderr, "Error: Invalid piece index %zu\n", piece_index);
     return false;
   }
 

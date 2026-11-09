@@ -1,9 +1,9 @@
-#include "bencode.h"
 #include "encoding.h"
-#include "magnet.h"
-#include "peer.h"
-#include "torrent.h"
-#include "tracker.h"
+#include <corsair/bencode.h>
+#include <corsair/magnet.h>
+#include <corsair/peer.h>
+#include <corsair/torrent.h>
+#include <corsair/tracker.h>
 #include <inttypes.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -55,17 +55,16 @@ static bool parse_output_opt(int *argc, char ***argv, const char **out_path) {
   return (*out_path != NULL);
 }
 
-static bool peer_handshake_and_print(const Peer *peer, Torrent *torrent,
-                                     PeerConnectFlags flags) {
+static bool peer_handshake_and_print(const Peer *peer, Torrent *torrent) {
   PeerConnection conn;
-  if (!peer_connect(peer, torrent, flags, &conn)) {
+  if (!peer_connect(peer, torrent, &conn)) {
     fprintf(stderr, "Error: Failed to establish handshake with %s:%u\n",
             peer->ip, peer->port);
     return false;
   }
 
   printf("Peer ID: ");
-  print_hex(conn.peer_id, sizeof(conn.peer_id));
+  print_hex(conn.peer_id.bytes, sizeof(conn.peer_id));
   printf("\n");
 
   peer_disconnect(&conn);
@@ -132,10 +131,10 @@ static bool cmd_peers(int argc, char *argv[]) {
   }
 
   PeerVector peers;
-  PeerVector_init(&peers, 16);
+  peer_vector_init(&peers, 16);
   if (!tracker_get_peers(&torrent, &peers)) {
     fprintf(stderr, "Error: Failed to retrieve peers from tracker\n");
-    PeerVector_destroy(&peers);
+    peer_vector_destroy(&peers);
     torrent_destroy(&torrent);
     return false;
   }
@@ -144,7 +143,7 @@ static bool cmd_peers(int argc, char *argv[]) {
     printf("%s:%u\n", peers.data[i].ip, peers.data[i].port);
   }
 
-  PeerVector_destroy(&peers);
+  peer_vector_destroy(&peers);
   torrent_destroy(&torrent);
   return true;
 }
@@ -168,7 +167,7 @@ static bool cmd_handshake(int argc, char *argv[]) {
     goto cleanup;
   }
 
-  ok = peer_handshake_and_print(&peer, &torrent, PEER_OPT_NONE);
+  ok = peer_handshake_and_print(&peer, &torrent);
 
 cleanup:
   torrent_destroy(&torrent);
@@ -204,19 +203,19 @@ static bool cmd_download_piece(int argc, char *argv[]) {
   }
 
   PeerVector peers;
-  PeerVector_init(&peers, 16);
+  peer_vector_init(&peers, 16);
   if (!tracker_get_peers(&torrent, &peers) || peers.count == 0) {
     fprintf(stderr, "Error: No peers available from tracker\n");
-    PeerVector_destroy(&peers);
+    peer_vector_destroy(&peers);
     torrent_destroy(&torrent);
     return false;
   }
 
   PeerConnection conn;
-  if (!peer_connect(&peers.data[0], &torrent, PEER_OPT_NONE, &conn)) {
+  if (!peer_connect(&peers.data[0], &torrent, &conn)) {
     fprintf(stderr, "Error: Failed to connect to peer %s:%u\n",
             peers.data[0].ip, peers.data[0].port);
-    PeerVector_destroy(&peers);
+    peer_vector_destroy(&peers);
     torrent_destroy(&torrent);
     return false;
   }
@@ -228,7 +227,7 @@ static bool cmd_download_piece(int argc, char *argv[]) {
   }
 
   peer_disconnect(&conn);
-  PeerVector_destroy(&peers);
+  peer_vector_destroy(&peers);
   torrent_destroy(&torrent);
   return ok;
 }
@@ -291,18 +290,18 @@ static bool cmd_magnet_handshake(int argc, char *argv[]) {
 
   bool ok = false;
   PeerVector peers;
-  PeerVector_init(&peers, 16);
+  peer_vector_init(&peers, 16);
   if (!tracker_get_peers(&torrent, &peers) || peers.count == 0) {
     fprintf(stderr, "Error: No peers returned from tracker '%s'\n",
             torrent.tracker_url);
     goto cleanup;
   }
 
-  ok = peer_handshake_and_print(&peers.data[0], &torrent, PEER_OPT_EXTENSIONS);
+  ok = peer_handshake_and_print(&peers.data[0], &torrent);
 
 cleanup:
   torrent_destroy(&torrent);
-  PeerVector_destroy(&peers);
+  peer_vector_destroy(&peers);
   return ok;
 }
 

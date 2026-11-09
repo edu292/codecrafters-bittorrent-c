@@ -1,5 +1,5 @@
-#include "magnet.h"
 #include "encoding.h"
+#include <corsair/magnet.h>
 #include <curl/curl.h>
 #include <stddef.h>
 #include <stdio.h>

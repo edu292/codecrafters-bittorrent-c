@@ -1,6 +1,6 @@
 #pragma once
 
-#include "torrent.h"
+#include <corsair/types.h>
 #include <stdint.h>
 
 typedef struct {

@@ -1,12 +1,16 @@
-#include "tracker.h"
-#include "bencode.h"
 #include "encoding.h"
-#include "peer.h"
+#include "peer_internal.h"
+#include "vector.h"
+#include <corsair/bencode.h>
+#include <corsair/peer.h>
+#include <corsair/tracker.h>
 #include <curl/curl.h>
 #include <curl/urlapi.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
+
+DEFINE_VECTOR(char, CharVector)
 
 static size_t write_to_buffer(void *contents, size_t size, size_t nmemb,
                               void *userp) {
@@ -39,7 +43,7 @@ bool tracker_get_peers(Torrent *t, PeerVector *out) {
                        "port=6881&uploaded=0&downloaded=0&left=%lld&compact=1"
                        "&peer_id=",
                        left_bytes);
-  p = bytes_to_percent_hex(p, t->peer_id, sizeof(t->peer_id));
+  p = bytes_to_percent_hex(p, t->peer_id.bytes, sizeof(t->peer_id));
   p = stpcpy(p, "&info_hash=");
   p = bytes_to_percent_hex(p, t->info_hash.bytes, sizeof(t->info_hash));
   *p = '\0';

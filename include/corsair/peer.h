@@ -1,6 +1,7 @@
 #pragma once
-#include "torrent.h"
-#include "vector.h"
+
+#include <corsair/torrent.h>
+#include <corsair/types.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -13,35 +14,36 @@ void peer_from_bytes(Peer *p, const uint8_t *src);
 bool peer_from_str(Peer *p, const char *src);
 
 typedef enum {
-  PEER_OPT_NONE = 0,
-  PEER_OPT_EXTENSIONS = (1 << 0),
-} PeerConnectFlags;
-
-typedef enum {
-  PEER_DL_OK = 0,
-  PEER_DL_MISSING_PIECE,
-  PEER_DL_CHOKED,
-  PEER_DL_INVALID_ARGS,
-  PEER_DL_CORRUPTED,
+  PEER_DL_OK,
   PEER_DL_ERR_SOCKET,
-} PeerDownloadStatus;
+  PEER_DL_ERR_CHOKED,
+  PEER_DL_ERR_CORRUPTED,
+  PEER_DL_ERR_MISSING_PIECE,
+  PEER_DL_ERR_INVALID_ARGS,
+} PeerDownloadResult;
 
 typedef struct {
-  uint8_t peer_id[20];
+  PeerId peer_id;
   size_t bitfield_length;
   uint8_t *bitfield;
+  uint8_t *extensions_table;
+  uint8_t state;
   int fd;
-  bool is_choked;
-  bool is_interested;
 } PeerConnection;
 
-bool peer_connect(const Peer *p, const Torrent *t, PeerConnectFlags pcf,
-                  PeerConnection *pc);
+bool peer_connect(const Peer *p, const Torrent *t, PeerConnection *pc);
 void peer_disconnect(PeerConnection *pc);
-PeerDownloadStatus peer_download_piece(PeerConnection *pc,
+PeerDownloadResult peer_download_piece(PeerConnection *pc,
                                        const TorrentInfo *ti,
                                        size_t piece_index, uint8_t *out);
 bool peer_download_piece_to_file(PeerConnection *pc, const TorrentInfo *ti,
                                  size_t piece_index, const char *out_path);
 
-DEFINE_VECTOR(Peer, PeerVector)
+typedef struct PeerVector {
+  Peer *data;
+  size_t capacity;
+  size_t count;
+} PeerVector;
+
+bool peer_vector_init(PeerVector *pv, size_t capacity);
+void peer_vector_destroy(PeerVector *pv);

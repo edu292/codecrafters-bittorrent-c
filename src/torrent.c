@@ -1,9 +1,11 @@
-#include "torrent.h"
-#include "bencode.h"
-#include "concurent_queue.h"
-#include "magnet.h"
-#include "peer.h"
-#include "tracker.h"
+#include "bencode_internal.h"
+#include "concurrent_queue.h"
+#include <corsair/bencode.h>
+#include <corsair/magnet.h>
+#include <corsair/peer.h>
+#include <corsair/torrent.h>
+#include <corsair/tracker.h>
+#include <corsair/types.h>
 #include <fcntl.h>
 #include <linux/limits.h>
 #include <openssl/sha.h>
@@ -151,9 +153,9 @@ size_t torrent_info_piece_length(const TorrentInfo *ti, size_t index) {
   return ti->piece_length;
 }
 
-void torrent_init_peer_id(uint8_t peer_id[20]) {
-  memcpy(peer_id, "-EDUSKI-", 8);
-  getrandom(peer_id + 8, 12, 0);
+void torrent_init_peer_id(PeerId *peer_id) {
+  memcpy(peer_id->bytes, "-EDUSKI-", 8);
+  getrandom(peer_id->bytes + 8, 12, 0);
 }
 
 bool torrent_from_file(Torrent *t, const char *filepath) {
@@ -224,7 +226,7 @@ bool torrent_from_file(Torrent *t, const char *filepath) {
   SHA1((const unsigned char *)info_raw.raw.data, info_raw.raw.length,
        (unsigned char *)&t->info_hash);
 
-  torrent_init_peer_id(t->peer_id);
+  torrent_init_peer_id(&t->peer_id);
 
   success = true;
   goto cleanup_bencode;
@@ -254,20 +256,14 @@ bool torrent_from_magnet(Torrent *t, char *uri) {
     return false;
   }
 
-  if (magnet.tracker == nullptr) {
-    fprintf(stderr, "kill me please\n");
-    return false;
-  }
-
   t->tracker_url = strdup(magnet.tracker);
   if (t->tracker_url == nullptr) {
     return false;
   }
 
-  printf("%s\n", t->tracker_url);
   t->info_hash = magnet.btih;
 
-  torrent_init_peer_id(t->peer_id);
+  torrent_init_peer_id(&t->peer_id);
 
   t->info = nullptr;
 
@@ -304,7 +300,7 @@ int worker(void *vctx) {
   while (ctx->downloaded_pieces < total_pieces &&
          PeerQueue_pop(ctx->peer_queue, &peer)) {
     PeerConnection conn;
-    if (!peer_connect(&peer, ctx->torrent, PEER_OPT_NONE, &conn)) {
+    if (!peer_connect(&peer, ctx->torrent, &conn)) {
       fprintf(stderr, "[worker] Handshake failed with %s:%u\n", peer.ip,
               peer.port);
       continue;
@@ -314,25 +310,26 @@ int worker(void *vctx) {
     size_t piece_index;
     while (PieceQueue_pop(ctx->piece_queue, &piece_index)) {
       size_t offset = piece_index * ctx->torrent->info->piece_length;
-      PeerDownloadStatus status = peer_download_piece(
+      PeerDownloadResult status = peer_download_piece(
           &conn, ctx->torrent->info, piece_index, ctx->out + offset);
 
       if (status == PEER_DL_OK) {
         ctx->downloaded_pieces++;
         consecutive_missing = 0;
+        fflush(stdout);
         continue;
       }
 
       PieceQueue_push(ctx->piece_queue, piece_index);
 
       switch (status) {
-      case PEER_DL_CHOKED:
+      case PEER_DL_ERR_CHOKED:
         fprintf(stderr, "[worker] Choked by %s:%u on piece %zu, waiting...\n",
                 peer.ip, peer.port, piece_index);
         PeerQueue_push(ctx->peer_queue, peer);
         goto disconnect_peer;
 
-      case PEER_DL_MISSING_PIECE:
+      case PEER_DL_ERR_MISSING_PIECE:
         size_t remaining_pieces = total_pieces - ctx->downloaded_pieces;
         if (++consecutive_missing >= remaining_pieces) {
           fprintf(
@@ -383,7 +380,7 @@ bool torrent_download_to_file(Torrent *t, const char *out_path) {
   bool success = false;
 
   PeerVector peers;
-  if (!PeerVector_init(&peers, 0)) {
+  if (!peer_vector_init(&peers, 0)) {
     goto cleanup_mmap;
   }
 
@@ -410,7 +407,7 @@ bool torrent_download_to_file(Torrent *t, const char *out_path) {
   for (size_t i = 0; i < peer_count; i++) {
     PeerQueue_push(&peer_queue, peers.data[i]);
   }
-  PeerVector_destroy(&peers);
+  peer_vector_destroy(&peers);
 
   size_t worker_count =
       peer_count > MAX_ACTIVE_WORKERS ? MAX_ACTIVE_WORKERS : peer_count;
@@ -441,7 +438,7 @@ cleanup_piece_queue:
 
 cleanup_peers:
   if (peers.data != nullptr) {
-    PeerVector_destroy(&peers);
+    peer_vector_destroy(&peers);
   }
 
 cleanup_mmap:

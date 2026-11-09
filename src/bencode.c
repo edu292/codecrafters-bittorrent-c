@@ -1,9 +1,13 @@
-#include "bencode.h"
+#include "bencode_internal.h"
+#include "vector.h"
+#include <corsair/bencode.h>
 #include <ctype.h>
 #include <inttypes.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
+
+DEFINE_VECTOR(char, CharVector)
 
 static int cmp_bencode_entries(const void *a, const void *b) {
   const BencodeDict_entry *entry_a = *(const BencodeDict_entry *const *)a;

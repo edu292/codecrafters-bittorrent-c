@@ -1,10 +1,8 @@
 #pragma once
+
+#include <corsair/types.h>
 #include <stddef.h>
 #include <stdint.h>
-
-typedef struct {
-  uint8_t bytes[20];
-} Sha1Hash;
 
 typedef struct {
   char *name;
@@ -16,9 +14,9 @@ typedef struct {
 
 size_t torrent_info_piece_length(const TorrentInfo *ti, size_t index);
 
-typedef struct {
+typedef struct Torrent {
   Sha1Hash info_hash;
-  uint8_t peer_id[20];
+  PeerId peer_id;
   char *tracker_url;
   TorrentInfo *info;
 } Torrent;
