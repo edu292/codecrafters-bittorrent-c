@@ -1,6 +1,5 @@
 #include "bencode_internal.h"
 #include "bencode_write.h"
-#include "corsair/types.h"
 #include "io_util.h"
 #include "peer_internal.h"
 #include "peer_proto.h"
@@ -9,6 +8,7 @@
 #include <corsair/bencode.h>
 #include <corsair/peer.h>
 #include <corsair/torrent.h>
+#include <corsair/types.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <netinet/in.h>
@@ -230,7 +230,7 @@ static inline bool peer_supports_extended(const PeerConnection *pc,
   }
 
   if (out_wire_id != nullptr) {
-    *out_wire_id = 0;
+    *out_wire_id = peer_id;
   }
   return true;
 }
@@ -361,22 +361,19 @@ bool peer_extended_messages_handshake(PeerConnection *pc) {
 }
 
 bool peer_connect(const Peer *p, const Torrent *t, PeerConnection *pc) {
+  struct sockaddr_in addr = {.sin_family = AF_INET, .sin_port = htons(p->port)};
+  if (inet_pton(AF_INET, p->ip, &addr.sin_addr) <= 0) {
+    fprintf(stderr, "Invalid or unsupported IP: %s\n", p->ip);
+    return false;
+  }
+
   int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
   if (fd < 0) {
     return false;
   }
 
-  struct sockaddr_in addr = {.sin_family = AF_INET, .sin_port = htons(p->port)};
-  if (inet_pton(AF_INET, p->ip, &addr.sin_addr) <= 0) {
-    fprintf(stderr, "Invalid or unsupported IP: %s\n", p->ip);
-    close(fd);
-    return false;
-  }
-
   if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-    perror("connect");
-    close(fd);
-    return false;
+    goto cleanup_fd;
   }
 
   static const char pstr[] = "BitTorrent protocol";
@@ -389,29 +386,20 @@ bool peer_connect(const Peer *p, const Torrent *t, PeerConnection *pc) {
   memcpy(hndshk.pstr, pstr, pstrlen);
   handshake_advertise_extension(&hndshk, EXTENDED_MESSAGES);
 
-  if (!write_all(fd, &hndshk, sizeof(hndshk))) {
-    close(fd);
-    return false;
-  }
-
-  if (!read_all(fd, &hndshk, sizeof(hndshk))) {
-    close(fd);
-    return false;
-  }
-
-  if (hndshk.pstrlen != pstrlen || memcmp(hndshk.pstr, pstr, pstrlen) != 0 ||
+  if (!write_all(fd, &hndshk, sizeof(hndshk)) ||
+      !read_all(fd, &hndshk, sizeof(hndshk)) || hndshk.pstrlen != pstrlen ||
+      memcmp(hndshk.pstr, pstr, pstrlen) != 0 ||
       memcmp(hndshk.info_hash.bytes, t->info_hash.bytes, 20) != 0) {
-    close(fd);
-    return false;
+    goto cleanup_fd;
   }
 
   if (t->info != nullptr) {
     size_t bf_len = (t->info->piece_count + 7) / 8;
     pc->bitfield = calloc(bf_len, sizeof(uint8_t));
     if (pc->bitfield == nullptr) {
-      close(fd);
-      return false;
+      goto cleanup_fd;
     }
+
     pc->bitfield_length = bf_len;
   } else {
     pc->bitfield = nullptr;
@@ -422,27 +410,26 @@ bool peer_connect(const Peer *p, const Torrent *t, PeerConnection *pc) {
   pc->state = PEER_STATE_INIT;
   pc->peer_id = hndshk.peer_id;
 
-  bool supports_extended_messages = false;
   if (handshake_supports_extension(&hndshk, EXTENDED_MESSAGES)) {
     peer_state_set(pc, PEER_EXTENSIONS_ENABLED);
     pc->extensions_table = calloc(_EXT_COUNT, sizeof(uint8_t));
     pc->extensions_table[EXT_MSG_HANDSHAKE] = EXT_MSG_HANDSHAKE;
-    supports_extended_messages = true;
   } else {
     pc->extensions_table = nullptr;
   }
 
-  if (!peer_recv_bitfield(pc)) {
-    peer_disconnect(pc);
-    return false;
-  }
+  if (!peer_recv_bitfield(pc) || (peer_state_is(pc, PEER_EXTENSIONS_ENABLED) &&
+                                  !peer_extended_messages_handshake(pc))) {
 
-  if (supports_extended_messages && !peer_extended_messages_handshake(pc)) {
     peer_disconnect(pc);
     return false;
   }
 
   return true;
+
+cleanup_fd:
+  close(fd);
+  return false;
 }
 
 void peer_disconnect(PeerConnection *pc) {
@@ -452,7 +439,7 @@ void peer_disconnect(PeerConnection *pc) {
     pc->bitfield_length = 0;
   }
 
-  if (peer_state_is(pc, PEER_EXTENSIONS_ENABLED)) {
+  if (pc->extensions_table != nullptr) {
     free(pc->extensions_table);
   }
 
