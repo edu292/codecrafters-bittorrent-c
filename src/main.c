@@ -37,6 +37,51 @@ static bool load_torrent_or_log(Torrent *t, const char *path) {
   return true;
 }
 
+static void torrent_print_info(const Torrent *torrent) {
+  printf("Tracker URL: %s\n", torrent->tracker_url);
+  printf("Length: %" PRId64 "\n", torrent->info->length);
+  printf("Info Hash: ");
+  print_hex(torrent->info_hash.bytes, sizeof(Sha1Hash));
+  printf("\n");
+  printf("Piece Length: %zu\n", torrent->info->piece_length);
+  printf("Piece Hashes:\n");
+  for (size_t i = 0; i < torrent->info->piece_count; i++) {
+    print_hex(torrent->info->pieces[i].bytes, sizeof(Sha1Hash));
+    printf("\n");
+  }
+}
+
+static bool magnet_connect_first_peer(const char *uri, Torrent *torrent,
+                                      PeerConnection *conn) {
+  if (!torrent_from_magnet(torrent, (char *)uri)) {
+    return false;
+  }
+
+  PeerVector peers;
+  if (!peer_vector_init(&peers, 16)) {
+    torrent_destroy(torrent);
+    return false;
+  }
+
+  if (!tracker_get_peers(torrent, &peers) || peers.count == 0) {
+    fprintf(stderr, "Error: No peers returned from tracker '%s'\n",
+            torrent->tracker_url);
+    peer_vector_destroy(&peers);
+    torrent_destroy(torrent);
+    return false;
+  }
+
+  bool ok = peer_connect(&peers.data[0], torrent, conn);
+  peer_vector_destroy(&peers);
+
+  if (!ok) {
+    torrent_destroy(torrent);
+    return false;
+  }
+
+  return true;
+}
+
 static bool parse_output_opt(int *argc, char ***argv, const char **out_path) {
   *out_path = NULL;
   optind = 1;
@@ -83,7 +128,7 @@ static bool cmd_decode(int argc, char *argv[]) {
   }
 
   char *bencode_str = bencode_to_str(&bencode);
-  if (!bencode_str) {
+  if (bencode_str == nullptr) {
     bencode_destroy(&bencode);
     fprintf(stderr, "Error: Failed to serialize bencode\n");
     return false;
@@ -91,6 +136,7 @@ static bool cmd_decode(int argc, char *argv[]) {
 
   printf("%s\n", bencode_str);
   free(bencode_str);
+  bencode_destroy(&bencode);
   return true;
 }
 
@@ -104,17 +150,7 @@ static bool cmd_info(int argc, char *argv[]) {
     return false;
   }
 
-  printf("Tracker URL: %s\n", torrent.tracker_url);
-  printf("Length: %" PRId64 "\n", torrent.info->length);
-  printf("Info Hash: ");
-  print_hex(torrent.info_hash.bytes, sizeof(Sha1Hash));
-  printf("\n");
-  printf("Piece Length: %zu\n", torrent.info->piece_length);
-  printf("Piece Hashes:\n");
-  for (size_t i = 0; i < torrent.info->piece_count; i++) {
-    print_hex(torrent.info->pieces[i].bytes, sizeof(Sha1Hash));
-    printf("\n");
-  }
+  torrent_print_info(&torrent);
 
   torrent_destroy(&torrent);
   return true;
@@ -284,21 +320,8 @@ static bool cmd_magnet_handshake(int argc, char *argv[]) {
   }
 
   Torrent torrent;
-  if (!torrent_from_magnet(&torrent, argv[1])) {
-    return false;
-  }
-
-  bool ok = false;
-  PeerVector peers;
-  peer_vector_init(&peers, 16);
-  if (!tracker_get_peers(&torrent, &peers) || peers.count == 0) {
-    fprintf(stderr, "Error: No peers returned from tracker '%s'\n",
-            torrent.tracker_url);
-    goto cleanup;
-  }
-
   PeerConnection conn;
-  if (!peer_connect(&peers.data[0], &torrent, &conn)) {
+  if (!magnet_connect_first_peer(argv[1], &torrent, &conn)) {
     return false;
   }
 
@@ -307,12 +330,35 @@ static bool cmd_magnet_handshake(int argc, char *argv[]) {
   printf("\n");
 
   printf("Peer Metadata Extension ID: %u\n", conn.extensions_table[1]);
+
   peer_disconnect(&conn);
+  torrent_destroy(&torrent);
+  return true;
+}
+
+static bool cmd_magnet_info(int argc, char *argv[]) {
+  if (argc < 2) {
+    return err_usage(argv[0]);
+  }
+
+  Torrent torrent;
+  PeerConnection conn;
+  if (!magnet_connect_first_peer(argv[1], &torrent, &conn)) {
+    return false;
+  }
+
+  bool ok = false;
+  if (!peer_request_metadata(&conn)) {
+    fprintf(stderr, "Error: Failed to fetch metadata from peer\n");
+    goto cleanup;
+  }
+
+  // torrent_print_info(&torrent);
   ok = true;
 
 cleanup:
+  peer_disconnect(&conn);
   torrent_destroy(&torrent);
-  peer_vector_destroy(&peers);
   return ok;
 }
 
@@ -365,6 +411,12 @@ static const CommandEntry COMMANDS[] = {
         "Query tracker and handshake with first peer",
         cmd_magnet_handshake,
     },
+    {
+        "magnet_info",
+        "<magnet_link>",
+        "Query tracker, download metadata, and display info",
+        cmd_magnet_info,
+    },
 };
 
 static void print_usage(const char *prog_name) {
@@ -372,7 +424,7 @@ static void print_usage(const char *prog_name) {
           prog_name);
   for (size_t i = 0; i < sizeof(COMMANDS) / sizeof(CommandEntry); i++) {
     const CommandEntry *c = &COMMANDS[i];
-    fprintf(stderr, "  %-14s %-28s %s\n", c->name, c->args_syntax,
+    fprintf(stderr, "  %-18s %-28s %s\n", c->name, c->args_syntax,
             c->description);
   }
 }

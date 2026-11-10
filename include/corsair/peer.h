@@ -47,3 +47,4 @@ typedef struct PeerVector {
 
 bool peer_vector_init(PeerVector *pv, size_t capacity);
 void peer_vector_destroy(PeerVector *pv);
+bool peer_request_metadata(PeerConnection *pc);

@@ -74,8 +74,8 @@ static inline bool msg_has_payload(MessageId id) {
 }
 
 typedef enum : uint8_t {
-  EXTENDED_MSG_HANDSHAKE = 0,
-  EXTENDED_MSG_METADATA,
+  EXT_MSG_HANDSHAKE = 0,
+  EXT_MSG_METADATA,
   _EXT_COUNT,
 } ExtendedMessageId;
 
@@ -84,5 +84,4 @@ typedef struct {
   BencodeDict header;
   const uint8_t *extra;
   size_t extra_len;
-  void *payload;
 } ExtendedMessage;

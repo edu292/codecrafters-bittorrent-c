@@ -204,19 +204,31 @@ bool peer_send_msg(int fd, MessageId id, const void *payload,
   return writev_all(fd, iov, iovcnt);
 }
 
-bool peer_send_extended_msg(int fd, uint8_t ext_id, const void *payload,
-                            size_t payload_len) {
+bool peer_send_extended_msg(PeerConnection *pc, ExtendedMessageId ext_id,
+                            const void *payload, size_t payload_len) {
+  if (!peer_state_is(pc, PEER_EXTENSIONS_ENABLED)) {
+    return false;
+  }
+
   uint32_t total_len = htonl((uint32_t)(1 + 1 + payload_len));
   uint8_t msg_id = MSG_EXTENDED;
 
+  uint8_t peer_ext_id = 0;
+  if (ext_id != EXT_MSG_HANDSHAKE) {
+    peer_ext_id = pc->extensions_table[ext_id];
+    if (peer_ext_id == 0) {
+      return false;
+    }
+  }
+
   struct iovec iov[] = {
-      {.iov_base = &total_len, .iov_len = sizeof(total_len)},
-      {.iov_base = &msg_id, .iov_len = 1},
-      {.iov_base = &ext_id, .iov_len = 1},
+      {.iov_base = &total_len, .iov_len = sizeof(uint32_t)},
+      {.iov_base = &msg_id, .iov_len = sizeof(MessageId)},
+      {.iov_base = &peer_ext_id, .iov_len = sizeof(ExtendedMessageId)},
       {.iov_base = (void *)payload, .iov_len = payload_len},
   };
 
-  return writev_all(fd, iov, payload_len > 0 ? 4 : 3);
+  return writev_all(pc->fd, iov, payload_len > 0 ? 4 : 3);
 }
 
 static inline MsgRequestPayload
@@ -271,7 +283,7 @@ bool extended_message_parse(const Message *msg, ExtendedMessage *out) {
   return true;
 }
 
-void parsed_extended_message_destroy(ExtendedMessage *msg) {
+void extended_message_destroy(ExtendedMessage *msg) {
   BencodeDict_destroy(&msg->header);
 }
 
@@ -281,13 +293,11 @@ bool peer_extended_messages_handshake(PeerConnection *pc) {
   bencode_write_dict_begin(&handshake_payload);
   bencode_write_str(&handshake_payload, "m");
   bencode_write_dict_begin(&handshake_payload);
-  bencode_write_key_int(&handshake_payload, "ut_metadata",
-                        EXTENDED_MSG_METADATA);
+  bencode_write_key_int(&handshake_payload, "ut_metadata", EXT_MSG_METADATA);
   bencode_write_dict_end(&handshake_payload);
   bencode_write_dict_end(&handshake_payload);
 
-  if (!peer_send_extended_msg(pc->fd, EXTENDED_MSG_HANDSHAKE,
-                              handshake_payload.data,
+  if (!peer_send_extended_msg(pc, EXT_MSG_HANDSHAKE, handshake_payload.data,
                               handshake_payload.count)) {
     return false;
   }
@@ -317,10 +327,11 @@ bool peer_extended_messages_handshake(PeerConnection *pc) {
         continue;
       }
 
-      pc->extensions_table[EXTENDED_MSG_METADATA] = (uint8_t)peer_extension_id;
+      pc->extensions_table[EXT_MSG_METADATA] = (uint8_t)peer_extension_id;
     }
   }
 
+  free(entries);
   return true;
 }
 
@@ -371,13 +382,11 @@ bool peer_connect(const Peer *p, const Torrent *t, PeerConnection *pc) {
 
   if (t->info != nullptr) {
     size_t bf_len = (t->info->piece_count + 7) / 8;
-    uint8_t *bf = calloc(bf_len, sizeof(uint8_t));
-    if (bf == nullptr) {
+    pc->bitfield = calloc(bf_len, sizeof(uint8_t));
+    if (pc->bitfield == nullptr) {
       close(fd);
       return false;
     }
-
-    pc->bitfield = bf;
     pc->bitfield_length = bf_len;
   } else {
     pc->bitfield = nullptr;
@@ -392,6 +401,7 @@ bool peer_connect(const Peer *p, const Torrent *t, PeerConnection *pc) {
   if (handshake_supports_extension(&hndshk, EXTENDED_MESSAGES)) {
     peer_state_set(pc, PEER_EXTENSIONS_ENABLED);
     pc->extensions_table = calloc(_EXT_COUNT, sizeof(uint8_t));
+    pc->extensions_table[EXT_MSG_HANDSHAKE] = EXT_MSG_HANDSHAKE;
     supports_extended_messages = true;
   } else {
     pc->extensions_table = nullptr;
@@ -403,6 +413,7 @@ bool peer_connect(const Peer *p, const Torrent *t, PeerConnection *pc) {
   }
 
   if (supports_extended_messages && !peer_extended_messages_handshake(pc)) {
+    peer_disconnect(pc);
     return false;
   }
 
@@ -419,7 +430,26 @@ void peer_disconnect(PeerConnection *pc) {
   if (peer_state_is(pc, PEER_EXTENSIONS_ENABLED)) {
     free(pc->extensions_table);
   }
+
   close(pc->fd);
+}
+
+bool peer_request_metadata(PeerConnection *pc) {
+  CharVector payload;
+  if (!CharVector_init(&payload, 1024)) {
+    return false;
+  }
+
+  if (!bencode_write_dict_begin(&payload) ||
+      !bencode_write_key_int(&payload, "msg_type", 0) ||
+      !bencode_write_key_int(&payload, "piece", 0) ||
+      !bencode_write_dict_end(&payload)) {
+    CharVector_destroy(&payload);
+    return false;
+  }
+
+  return peer_send_extended_msg(pc, EXT_MSG_METADATA, payload.data,
+                                payload.count);
 }
 
 static inline PeerDownloadResult peer_dl_result_from_wait(PeerWaitResult res) {

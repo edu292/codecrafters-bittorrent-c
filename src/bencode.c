@@ -183,16 +183,20 @@ static bool bencode_to_vec(const Bencode *b, CharVector *v) {
     qsort(entries, b->value.dict->count, sizeof(BencodeDict_entry *),
           cmp_bencode_entries);
 
+    bool ok = true;
     for (size_t i = 0; i < b->value.dict->count; i++) {
       const BencodeDict_entry *entry = entries[i];
       if (!CharVector_extend_quoted(v, entry->key) ||
-          !CharVector_push(v, ':') || !bencode_to_vec(&entry->value, v)) {
-        return false;
+          !CharVector_push(v, ':') || !bencode_to_vec(&entry->value, v) ||
+          (i != b->value.dict->count - 1 && !CharVector_push(v, ','))) {
+        ok = false;
+        break;
       }
+    }
 
-      if (i != b->value.dict->count - 1 && !CharVector_push(v, ',')) {
-        return false;
-      }
+    free(entries);
+    if (!ok) {
+      return false;
     }
 
     return CharVector_push(v, '}');
