@@ -4,6 +4,7 @@
 #include <corsair/peer.h>
 #include <corsair/torrent.h>
 #include <corsair/tracker.h>
+#include <corsair/types.h>
 #include <inttypes.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -122,7 +123,7 @@ static bool cmd_decode(int argc, char *argv[]) {
   }
 
   Bencode bencode;
-  if (!bencode_init(&bencode, argv[1])) {
+  if (!bencode_init(&bencode, sv_from_cstr(argv[1]))) {
     fprintf(stderr, "Error: Failed to parse bencoded input\n");
     return false;
   }
@@ -347,13 +348,13 @@ static bool cmd_magnet_info(int argc, char *argv[]) {
     return false;
   }
 
-  bool ok = false;
-  if (!peer_request_metadata(&conn)) {
+  bool ok = true;
+  if (!peer_request_metadata(&conn, &torrent)) {
     fprintf(stderr, "Error: Failed to fetch metadata from peer\n");
     goto cleanup;
   }
 
-  // torrent_print_info(&torrent);
+  torrent_print_info(&torrent);
   ok = true;
 
 cleanup:

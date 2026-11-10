@@ -1,8 +1,10 @@
 #include "bencode_internal.h"
 #include "bencode_write.h"
+#include "corsair/types.h"
 #include "io_util.h"
 #include "peer_internal.h"
 #include "peer_proto.h"
+#include "torrent_internal.h"
 #include <arpa/inet.h>
 #include <corsair/bencode.h>
 #include <corsair/peer.h>
@@ -204,22 +206,45 @@ bool peer_send_msg(int fd, MessageId id, const void *payload,
   return writev_all(fd, iov, iovcnt);
 }
 
-bool peer_send_extended_msg(PeerConnection *pc, ExtendedMessageId ext_id,
-                            const void *payload, size_t payload_len) {
+static inline bool peer_supports_extended(const PeerConnection *pc,
+                                          ExtendedMessageId ext_id,
+                                          uint8_t *out_wire_id) {
   if (!peer_state_is(pc, PEER_EXTENSIONS_ENABLED)) {
     return false;
   }
 
-  uint32_t total_len = htonl((uint32_t)(1 + 1 + payload_len));
-  uint8_t msg_id = MSG_EXTENDED;
-
-  uint8_t peer_ext_id = 0;
-  if (ext_id != EXT_MSG_HANDSHAKE) {
-    peer_ext_id = pc->extensions_table[ext_id];
-    if (peer_ext_id == 0) {
-      return false;
+  if (ext_id == EXT_MSG_HANDSHAKE) {
+    if (out_wire_id != nullptr) {
+      *out_wire_id = 0;
     }
+    return true;
   }
+
+  if (ext_id >= _EXT_COUNT) {
+    return false;
+  }
+
+  uint8_t peer_id = pc->extensions_table[ext_id];
+  if (peer_id == 0) {
+    return false;
+  }
+
+  if (out_wire_id != nullptr) {
+    *out_wire_id = 0;
+  }
+  return true;
+}
+
+bool peer_send_extended_msg(PeerConnection *pc, ExtendedMessageId ext_id,
+                            const void *payload, size_t payload_len) {
+  uint8_t peer_ext_id = 0;
+  if (!peer_supports_extended(pc, ext_id, &peer_ext_id)) {
+    return false;
+  }
+
+  uint32_t total_len = htonl(
+      (uint32_t)(sizeof(MessageId) + sizeof(ExtendedMessageId) + payload_len));
+  uint8_t msg_id = MSG_EXTENDED;
 
   struct iovec iov[] = {
       {.iov_base = &total_len, .iov_len = sizeof(uint32_t)},
@@ -255,36 +280,36 @@ static inline MsgPiecePayload *peer_msg_piece_parse(Message *msg,
 }
 
 bool extended_message_parse(const Message *msg, ExtendedMessage *out) {
-  if (msg->payload_len < 1) {
+  if (msg->id != MSG_EXTENDED || msg->payload_len == 0) {
     return false;
   }
 
   const uint8_t *raw = msg->payload;
-  out->extended_id = raw[0];
+  ExtendedMessageId ext_id = raw[0];
 
-  Bencode bencode;
   const char *bencode_start = (const char *)(raw + 1);
-  const char *bencode_end = parse_bencode(bencode_start, &bencode);
-  if (bencode_end == nullptr) {
+
+  size_t extended_msg_payload = msg->payload_len - sizeof(ExtendedMessageId);
+  StringView bencode_end = parse_bencode(
+      sv_build(bencode_start, extended_msg_payload), &out->header_bencode);
+  if (sv_is_null(bencode_end)) {
     return false;
   }
 
-  if (bencode.type != BENCODE_DICT) {
-    bencode_destroy(&bencode);
+  if (!bencode_get_dict(&out->header_bencode, &out->header)) {
+
+    bencode_destroy(&out->header_bencode);
+    out->header = nullptr;
     return false;
   }
 
-  out->header = *bencode.value.dict;
-  free(bencode.value.dict);
-
-  size_t parsed_len = (size_t)(bencode_end - (const char *)raw);
-  out->extra = raw + parsed_len;
-  out->extra_len = msg->payload_len - parsed_len;
+  out->extended_id = ext_id;
+  out->extra = bencode_end;
   return true;
 }
 
-void extended_message_destroy(ExtendedMessage *msg) {
-  BencodeDict_destroy(&msg->header);
+void extended_message_destroy(ExtendedMessage *ext_msg) {
+  bencode_destroy(&ext_msg->header_bencode);
 }
 
 bool peer_extended_messages_handshake(PeerConnection *pc) {
@@ -314,7 +339,7 @@ bool peer_extended_messages_handshake(PeerConnection *pc) {
   };
 
   const BencodeDict *m;
-  if (!bencode_dict_get_dict(&res.header, "m", &m)) {
+  if (!bencode_dict_get_dict(res.header, "m", &m)) {
     return false;
   }
 
@@ -434,22 +459,64 @@ void peer_disconnect(PeerConnection *pc) {
   close(pc->fd);
 }
 
-bool peer_request_metadata(PeerConnection *pc) {
+bool peer_request_metadata(PeerConnection *pc, Torrent *t) {
+  if (!peer_supports_extended(pc, EXT_MSG_METADATA, nullptr)) {
+    return false;
+  }
+
   CharVector payload;
   if (!CharVector_init(&payload, 1024)) {
     return false;
   }
 
   if (!bencode_write_dict_begin(&payload) ||
-      !bencode_write_key_int(&payload, "msg_type", 0) ||
+      !bencode_write_key_int(&payload, "msg_type", METADATA_REQUEST) ||
       !bencode_write_key_int(&payload, "piece", 0) ||
       !bencode_write_dict_end(&payload)) {
-    CharVector_destroy(&payload);
+    goto cleanup_payload;
+  }
+
+  if (!peer_send_extended_msg(pc, EXT_MSG_METADATA, payload.data,
+                              payload.count)) {
+    goto cleanup_payload;
+  }
+
+  CharVector_destroy(&payload);
+
+  Message msg = {};
+  if (!peer_recv_message(pc->fd, &msg)) {
     return false;
   }
 
-  return peer_send_extended_msg(pc, EXT_MSG_METADATA, payload.data,
-                                payload.count);
+  bool ok = false;
+
+  ExtendedMessage ext_msg = {};
+  if (!extended_message_parse(&msg, &ext_msg)) {
+    goto cleanup_msg;
+  }
+
+  int64_t msg_type = 0;
+  if (!bencode_dict_get_int(ext_msg.header, "msg_type", &msg_type) ||
+      msg_type != 1) {
+    goto cleanup_ext_msg;
+  }
+
+  if (!torrent_load_metadata(t, ext_msg.extra)) {
+    goto cleanup_ext_msg;
+  }
+
+  ok = true;
+
+cleanup_ext_msg:
+  extended_message_destroy(&ext_msg);
+
+cleanup_msg:
+  free(msg.payload);
+  return ok;
+
+cleanup_payload:
+  CharVector_destroy(&payload);
+  return false;
 }
 
 static inline PeerDownloadResult peer_dl_result_from_wait(PeerWaitResult res) {

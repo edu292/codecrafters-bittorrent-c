@@ -25,7 +25,7 @@ typedef struct Bencode {
   } value;
 } Bencode;
 
-bool bencode_init(Bencode *b, const char *encoded);
+bool bencode_init(Bencode *b, StringView encoded);
 char *bencode_to_str(Bencode *b);
 void bencode_destroy(Bencode *b);
 

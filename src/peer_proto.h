@@ -1,6 +1,6 @@
 #pragma once
 
-#include "bencode_internal.h"
+#include "corsair/bencode.h"
 #include <corsair/torrent.h>
 #include <corsair/types.h>
 #include <stddef.h>
@@ -81,7 +81,7 @@ typedef enum : uint8_t {
 
 typedef struct {
   ExtendedMessageId extended_id;
-  BencodeDict header;
-  const uint8_t *extra;
-  size_t extra_len;
+  Bencode header_bencode;
+  const BencodeDict *header;
+  StringView extra;
 } ExtendedMessage;

@@ -17,11 +17,13 @@ typedef struct {
   size_t length;
 } StringView;
 
-static inline StringView sv_build(const char *s) {
+constexpr StringView SV_NULL = (StringView){.data = nullptr, .length = 0};
+
+static inline StringView sv_from_cstr(const char *s) {
   return (StringView){.data = s, .length = strlen(s)};
 }
 
-static inline StringView sv_from_parts(const char *data, size_t length) {
+static inline StringView sv_build(const char *data, size_t length) {
   return (StringView){.data = data, .length = length};
 }
 
@@ -47,3 +49,14 @@ static inline size_t sv_hash(StringView s) {
 
   return hash;
 }
+
+[[nodiscard]] static inline StringView sv_advance(StringView s, size_t n) {
+  if (n > s.length) {
+    n = s.length;
+  }
+  return (StringView){.data = s.data + n, .length = s.length - n};
+}
+
+static inline bool sv_is_null(StringView s) { return s.data == nullptr; }
+
+static inline bool sv_is_empty(StringView s) { return s.length == 0; }

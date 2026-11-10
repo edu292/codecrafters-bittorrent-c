@@ -1,6 +1,7 @@
 #include "bencode_internal.h"
 #include "vector.h"
 #include <corsair/bencode.h>
+#include <corsair/types.h>
 #include <ctype.h>
 #include <inttypes.h>
 #include <stddef.h>
@@ -30,86 +31,110 @@ static inline bool CharVector_extend_quoted(CharVector *v, StringView s) {
          CharVector_push(v, '"');
 }
 
-const char *parse_bencode(const char *encoded, Bencode *out) {
-  if (*encoded == '\0') {
-    return nullptr;
+StringView parse_bencode(StringView in, Bencode *out) {
+  if (sv_is_empty(in) || sv_is_null(in)) {
+    return SV_NULL;
   }
 
-  const char *start = encoded;
-  const char *next = nullptr;
-
-  if (isdigit(*encoded)) {
-    const char *colon = strchr(encoded, ':');
+  const char *start = in.data;
+  if (isdigit(in.data[0])) {
+    const char *colon = memchr(in.data, ':', in.length);
     if (colon == nullptr) {
-      return nullptr;
+      goto fail;
     }
 
-    size_t len = strtoumax(encoded, nullptr, 10);
-    const char *data = colon + 1;
+    char *endptr = nullptr;
+    size_t str_len = strtoumax(in.data, &endptr, 10);
+    if (endptr != colon) {
+      goto fail;
+    }
+
+    size_t header_len = (size_t)(colon + 1 - in.data);
+    size_t bencode_len = header_len + str_len;
+    if (in.length < bencode_len) {
+      goto fail;
+    }
 
     out->type = BENCODE_STRING;
-    out->value.string.data = data;
-    out->value.string.length = len;
-    next = data + len;
+    out->value.string = sv_build(colon + 1, str_len);
+    in = sv_advance(in, bencode_len);
   } else {
-    switch (encoded[0]) {
+    switch (in.data[0]) {
     case 'i':
-      const char *end = strchr(encoded + 1, 'e');
+      in = sv_advance(in, 1);
+      const char *end = memchr(in.data, 'e', in.length);
       if (end == nullptr) {
-        return nullptr;
+        goto fail;
+      }
+
+      char *endptr = nullptr;
+      int64_t val = strtoimax(in.data, &endptr, 10);
+      if (endptr != end) {
+        goto fail;
       }
 
       out->type = BENCODE_INTEGER;
-      out->value.integer = strtoimax(encoded + 1, nullptr, 10);
-      next = end + 1;
+      out->value.integer = val;
+
+      in = sv_advance(in, (size_t)(end + 1 - in.data));
       break;
 
     case 'l':
-      encoded++;
       out->type = BENCODE_LIST;
       out->value.list = malloc(sizeof(BencodeList));
       if (out->value.list == nullptr) {
-        return nullptr;
+        goto fail;
       }
 
       if (!BencodeList_init(out->value.list, 16)) {
         free(out->value.list);
-        return nullptr;
+        out->value.list = nullptr;
+        goto fail;
       }
 
-      while (*encoded != 'e') {
+      in = sv_advance(in, 1);
+
+      while (in.length > 0 && in.data[0] != 'e') {
         Bencode elem;
-        encoded = parse_bencode(encoded, &elem);
-        if (encoded == nullptr || !BencodeList_push(out->value.list, elem)) {
+        in = parse_bencode(in, &elem);
+
+        if (sv_is_null(in) || !BencodeList_push(out->value.list, elem)) {
           goto fail;
         }
       }
-      next = encoded + 1;
+
+      if (in.length == 0) {
+        goto fail;
+      }
+
+      in = sv_advance(in, 1);
       break;
 
     case 'd':
-      encoded++;
       out->type = BENCODE_DICT;
       out->value.dict = malloc(sizeof(BencodeDict));
       if (out->value.dict == nullptr) {
-        return nullptr;
+        goto fail;
       }
 
       if (!BencodeDict_init(out->value.dict, 0)) {
         free(out->value.dict);
-        return nullptr;
+        out->value.dict = nullptr;
+        goto fail;
       }
 
-      while (*encoded != 'e') {
+      in = sv_advance(in, 1);
+
+      while (in.length > 0 && in.data[0] != 'e') {
         Bencode key;
         Bencode value;
-        encoded = parse_bencode(encoded, &key);
-        if (encoded == nullptr || key.type != BENCODE_STRING) {
+        in = parse_bencode(in, &key);
+        if (sv_is_null(in) || key.type != BENCODE_STRING) {
           goto fail;
         }
 
-        encoded = parse_bencode(encoded, &value);
-        if (encoded == nullptr) {
+        in = parse_bencode(in, &value);
+        if (sv_is_null(in)) {
           goto fail;
         }
 
@@ -119,24 +144,27 @@ const char *parse_bencode(const char *encoded, Bencode *out) {
         }
       }
 
-      next = encoded + 1;
+      if (in.length == 0) {
+        goto fail;
+      }
+
+      in = sv_advance(in, 1);
       break;
     default:
-      return nullptr;
+      goto fail;
     }
   }
 
-  out->raw.data = start;
-  out->raw.length = (size_t)(next - start);
-  return next;
+  out->raw = sv_build(start, (size_t)(in.data - start));
+  return in;
 
 fail:
   bencode_destroy(out);
-  return nullptr;
+  return SV_NULL;
 }
 
-bool bencode_init(Bencode *b, const char *encoded) {
-  return parse_bencode(encoded, b) != nullptr;
+bool bencode_init(Bencode *b, StringView encoded) {
+  return !sv_is_null(parse_bencode(encoded, b));
 }
 
 static bool bencode_to_vec(const Bencode *b, CharVector *v) {
@@ -285,20 +313,20 @@ bool bencode_get_list(const Bencode *b, const BencodeList **out) {
 bool bencode_dict_get_int(const BencodeDict *dict, const char *key,
                           int64_t *out) {
   Bencode val;
-  return BencodeDict_get(dict, sv_build(key), &val) &&
+  return BencodeDict_get(dict, sv_from_cstr(key), &val) &&
          bencode_get_int(&val, out);
 }
 
 bool bencode_dict_get_str(const BencodeDict *dict, const char *key,
                           StringView *out) {
   Bencode val;
-  return BencodeDict_get(dict, sv_build(key), &val) &&
+  return BencodeDict_get(dict, sv_from_cstr(key), &val) &&
          bencode_get_str(&val, out);
 }
 
 bool bencode_dict_get_dict(const BencodeDict *dict, const char *key,
                            const BencodeDict **out) {
   Bencode val;
-  return BencodeDict_get(dict, sv_build(key), &val) &&
+  return BencodeDict_get(dict, sv_from_cstr(key), &val) &&
          bencode_get_dict(&val, out);
 }

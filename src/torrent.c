@@ -97,48 +97,56 @@ bool torrent_info_init(TorrentInfo *ti, const BencodeDict *dict) {
   return true;
 }
 
-TorrentInfo *torrent_info_from_bencode(const char *raw_data, size_t len,
-                                       const Sha1Hash *expected_hash) {
-  if (expected_hash != nullptr) {
-    Sha1Hash computed;
-    SHA1((const unsigned char *)raw_data, len, computed.bytes);
-    if (memcmp(computed.bytes, expected_hash->bytes, sizeof(Sha1Hash)) != 0) {
-      fprintf(stderr, "Error: Info hash mismatch\n");
-      return nullptr;
-    }
+void torrent_info_destroy(TorrentInfo *ti) {
+  free(ti->pieces);
+  free(ti->name);
+}
+
+bool torrent_load_metadata(Torrent *t, StringView raw_metadata) {
+  Sha1Hash computed;
+  SHA1((const unsigned char *)raw_metadata.data, raw_metadata.length,
+       computed.bytes);
+  if (memcmp(computed.bytes, t->info_hash.bytes, sizeof(Sha1Hash)) != 0) {
+    fprintf(stderr, "Error: Metadata hash mismatch\n");
+    return false;
   }
 
   Bencode bencode;
-  if (!bencode_init(&bencode, raw_data)) {
-    fprintf(stderr, "Error: Failed to parse info bencode\n");
-    return nullptr;
+  if (!bencode_init(&bencode, raw_metadata)) {
+    fprintf(stderr, "Error: Failed to parse metadata bencode\n");
+    return false;
   }
 
   const BencodeDict *info_dict;
   if (!bencode_get_dict(&bencode, &info_dict)) {
-    fprintf(stderr, "Error: Info bencode is not a dictionary\n");
-    bencode_destroy(&bencode);
-    return nullptr;
+    fprintf(stderr, "Error: Metadata bencode is not a dictionary\n");
+    goto cleanup_bencode;
   }
 
   TorrentInfo *ti = malloc(sizeof(TorrentInfo));
   if (ti == nullptr) {
-    bencode_destroy(&bencode);
-    return nullptr;
+    goto cleanup_bencode;
   }
 
   if (!torrent_info_init(ti, info_dict)) {
-    free(ti);
-    ti = nullptr;
+    goto cleanup_ti;
   }
 
   bencode_destroy(&bencode);
-  return ti;
-}
 
-void torrent_info_destroy(TorrentInfo *ti) {
-  free(ti->pieces);
-  free(ti->name);
+  if (t->info != nullptr) {
+    torrent_info_destroy(t->info);
+    free(t->info);
+  }
+  t->info = ti;
+  return true;
+
+cleanup_ti:
+  free(ti);
+
+cleanup_bencode:
+  bencode_destroy(&bencode);
+  return false;
 }
 
 size_t torrent_info_piece_length(const TorrentInfo *ti, size_t index) {
@@ -184,7 +192,7 @@ bool torrent_from_file(Torrent *t, const char *filepath) {
   bool success = false;
 
   Bencode bencode;
-  if (!bencode_init(&bencode, data)) {
+  if (!bencode_init(&bencode, sv_build(data, file_size))) {
     fprintf(stderr, "Error: Failed to parse bencode from %s\n", filepath);
     goto cleanup_mmap;
   }
@@ -208,7 +216,7 @@ bool torrent_from_file(Torrent *t, const char *filepath) {
 
   Bencode info_raw;
   const BencodeDict *info_dict;
-  if (!BencodeDict_get(root, sv_build("info"), &info_raw) ||
+  if (!BencodeDict_get(root, sv_from_cstr("info"), &info_raw) ||
       !bencode_get_dict(&info_raw, &info_dict)) {
     fprintf(stderr, "Error: Missing or invalid 'info' dictionary\n");
     goto cleanup_tracker;

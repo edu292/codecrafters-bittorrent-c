@@ -1,3 +1,4 @@
+#include "corsair/types.h"
 #include "encoding.h"
 #include "peer_internal.h"
 #include "vector.h"
@@ -63,9 +64,9 @@ bool tracker_get_peers(Torrent *t, PeerVector *out) {
   }
 
   Bencode bencode;
-  if (!CharVector_push(&response, '\0') ||
-      !bencode_init(&bencode, response.data)) {
-    fprintf(stderr, "Error: Failed to parse tracker response\n");
+  if (!bencode_init(&bencode, sv_build(response.data, response.count))) {
+    fprintf(stderr, "Error: Failed to parse tracker response: %.*s\n",
+            (int)response.count, response.data);
     goto cleanup;
   }
 

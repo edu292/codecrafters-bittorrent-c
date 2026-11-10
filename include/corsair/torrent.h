@@ -1,5 +1,6 @@
 #pragma once
 
+#include <corsair/bencode.h>
 #include <corsair/types.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -11,8 +12,6 @@ typedef struct {
   size_t piece_count;
   Sha1Hash *pieces;
 } TorrentInfo;
-
-size_t torrent_info_piece_length(const TorrentInfo *ti, size_t index);
 
 typedef struct Torrent {
   Sha1Hash info_hash;
