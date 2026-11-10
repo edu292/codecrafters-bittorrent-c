@@ -29,7 +29,7 @@ char *sanitize_filename(const char *raw, size_t len) {
 
   char *clean = malloc(len + 1);
   if (clean == nullptr) {
-    return NULL;
+    return nullptr;
   }
 
   size_t out = 0;
@@ -364,32 +364,10 @@ int worker(void *vctx) {
 }
 
 bool torrent_download_to_file(Torrent *t, const char *out_path) {
-  int fd = open(out_path, O_RDWR | O_CREAT | O_TRUNC, 0644);
-  if (fd < 0) {
-    perror("open");
-    return false;
-  }
-
-  if (ftruncate(fd, (off_t)t->info->length) != 0) {
-    perror("ftruncate");
-    close(fd);
-    return false;
-  }
-
-  uint8_t *dest = mmap(NULL, (size_t)t->info->length, PROT_READ | PROT_WRITE,
-                       MAP_SHARED, fd, 0);
-  close(fd);
-
-  if (dest == MAP_FAILED) {
-    perror("mmap");
-    return false;
-  }
-
   bool success = false;
-
   PeerVector peers;
   if (!peer_vector_init(&peers, 0)) {
-    goto cleanup_mmap;
+    return false;
   }
 
   if (!tracker_get_peers(t, &peers) || peers.count == 0) {
@@ -397,9 +375,53 @@ bool torrent_download_to_file(Torrent *t, const char *out_path) {
     goto cleanup_peers;
   }
 
+  if (t->info == nullptr) {
+    bool metadata_loaded = false;
+    PeerConnection conn = {};
+
+    for (size_t i = 0; i < peers.count; i++) {
+      if (peer_connect(&peers.data[i], t, &conn)) {
+        if (peer_request_metadata(&conn, t)) {
+          metadata_loaded = true;
+          peer_disconnect(&conn);
+          break;
+        }
+
+        peer_disconnect(&conn);
+      }
+    }
+
+    if (!metadata_loaded) {
+      fprintf(stderr, "Failed to retrieve torrent metadata from peers\n");
+      goto cleanup_peers;
+    }
+  }
+
+  int fd = open(out_path, O_RDWR | O_CREAT | O_TRUNC, 0644);
+  if (fd < 0) {
+    perror("open");
+    goto cleanup_peers;
+  }
+
+  if (ftruncate(fd, (off_t)t->info->length) != 0) {
+    perror("ftruncate");
+    goto cleanup_fd;
+  }
+
+  uint8_t *dest = mmap(nullptr, (size_t)t->info->length, PROT_READ | PROT_WRITE,
+                       MAP_SHARED, fd, 0);
+
+  close(fd);
+  fd = -1;
+
+  if (dest == MAP_FAILED) {
+    perror("mmap");
+    goto cleanup_peers;
+  }
+
   PieceQueue piece_queue;
   if (!PieceQueue_init(&piece_queue, t->info->piece_count)) {
-    goto cleanup_peers;
+    goto cleanup_mmap;
   }
 
   PeerQueue peer_queue;
@@ -415,7 +437,6 @@ bool torrent_download_to_file(Torrent *t, const char *out_path) {
   for (size_t i = 0; i < peer_count; i++) {
     PeerQueue_push(&peer_queue, peers.data[i]);
   }
-  peer_vector_destroy(&peers);
 
   size_t worker_count =
       peer_count > MAX_ACTIVE_WORKERS ? MAX_ACTIVE_WORKERS : peer_count;
@@ -444,16 +465,21 @@ bool torrent_download_to_file(Torrent *t, const char *out_path) {
 cleanup_piece_queue:
   PieceQueue_destroy(&piece_queue);
 
-cleanup_peers:
-  if (peers.data != nullptr) {
-    peer_vector_destroy(&peers);
+cleanup_mmap:
+  if (dest != MAP_FAILED) {
+    if (success) {
+      msync(dest, (size_t)t->info->length, MS_SYNC);
+    }
+    munmap(dest, (size_t)t->info->length);
   }
 
-cleanup_mmap:
-  if (success) {
-    msync(dest, (size_t)t->info->length, MS_SYNC);
+cleanup_fd:
+  if (fd >= 0) {
+    close(fd);
   }
-  munmap(dest, (size_t)t->info->length);
+
+cleanup_peers:
+  peer_vector_destroy(&peers);
 
   return success;
 }

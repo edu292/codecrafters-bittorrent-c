@@ -366,6 +366,28 @@ static bool cmd_magnet_download_piece(int argc, char *argv[]) {
   return download_piece_pipeline(magnet_uri, piece_idx, out_path, true);
 }
 
+static bool cmd_magnet_download(int argc, char *argv[]) {
+  const char *cmd_name = argv[0];
+  const char *out_path = nullptr;
+  if (!parse_output_opt(&argc, &argv, &out_path) || argc < 1) {
+    return err_usage(cmd_name);
+  }
+
+  Torrent t;
+  if (!load_torrent(&t, argv[0], true)) {
+    return false;
+  }
+
+  bool ok = torrent_download_to_file(&t, out_path);
+  if (ok) {
+    printf("Downloaded %s to %s.\n", argv[0], out_path);
+  } else {
+    fprintf(stderr, "Error: Failed to download torrent to %s\n", out_path);
+  }
+  torrent_destroy(&t);
+  return ok;
+}
+
 static const CommandEntry COMMANDS[] = {
     {
         "decode",
@@ -426,6 +448,12 @@ static const CommandEntry COMMANDS[] = {
         "-o <out> <magnet_link> <idx>",
         "Download a specific piece using a magnet link",
         cmd_magnet_download_piece,
+    },
+    {
+        "magnet_download",
+        "-o <out> <torrent>",
+        "Download the entire file from magnet link",
+        cmd_magnet_download,
     },
 };
 
